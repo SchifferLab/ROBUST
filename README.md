@@ -12,6 +12,7 @@ An example is shown in the examples/DHFR.
 ## Examples
 
 1. DHFR
+Application of pMD and ROBUST to identify Trimethoprim resistant dihydrofolate reductase. Inhibitor data was taken form Queener et al.^{[1]}
 
 ## Requirements
 
