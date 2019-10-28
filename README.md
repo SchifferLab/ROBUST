@@ -13,7 +13,9 @@ An example is shown in the examples/DHFR.
 
 1. DHFR
 
+## Requirements
 
+ROBUST Transformers utilizes the [Schrodinger Python Api](https://www.schrodinger.com/pythonapi) to parse and process molecular dynamics simulations. Transformers have been tested with Schrodinger v.18.1 and v.19.1 . The data analysis examples do not require schrodigner modules and only have to meet the python dependencies.
 
 ## References
 
