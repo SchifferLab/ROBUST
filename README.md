@@ -24,10 +24,10 @@ ROBUST Transformers utilizes the [Schrodinger Python Api](https://www.schrodinge
 
 ## Contact
 
-Florian Leidner
+Florian Leidner:
 
 florian.leidner@umassmed.edu
 
-Celia Schiffer
+Celia Schiffer:
 
 celia.schiffer@umassmed.edu
