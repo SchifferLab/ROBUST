@@ -22,4 +22,12 @@ ROBUST Transformers utilizes the [Schrodinger Python Api](https://www.schrodinge
 
 [1] Queener SF, Cody V, Pace J, Torkelson P, Gangjee A. Trimethoprim resistance of dihydrofolate reductase variants from clinical isolates of Pneumocystis jirovecii. Antimicrobial agents and chemotherapy. 2013 Oct 1;57(10):4990-8.
 
-## Contributors
+## Contact
+
+Florian Leidner
+
+florian.leidner@umassmed.edu
+
+Celia Schiffer
+
+celia.schiffer@umassmed.edu
