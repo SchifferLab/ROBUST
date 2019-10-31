@@ -38,7 +38,8 @@ All transformers  can be incorporated into a PLDB pipeline. For details on our i
 
 ## Examples
 
-1. DHFR
+#### DHFR
+
 Application of pMD and ROBUST to identify Trimethoprim resistant dihydrofolate reductase. Inhibitor data was taken form Queener et al.[1]
 
 
