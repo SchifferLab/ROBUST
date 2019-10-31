@@ -6,7 +6,7 @@ Add Description
 
 ## Requirements
 
-Transformers require [Schrodinger](https://www.schrodinger.com) &GreaterEqual; v.18.1 to parse and process molecular dynamics simulations.  
+Transformers require [Schrodinger](https://www.schrodinger.com) &GreaterEqual; v.18.1 to process molecular dynamics simulations.  
 
 Example descriptors have been precomputed and do not require Schrodinger.
 
