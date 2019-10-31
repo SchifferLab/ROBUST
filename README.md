@@ -6,10 +6,9 @@ Add Description
 
 ## Requirements
 
-ROBUST Transformers require [Schrodinger](https://www.schrodinger.com) &GreaterEqual; v.18.1 to parse and process molecular dynamics simulations.  
+Transformers require [Schrodinger](https://www.schrodinger.com) &GreaterEqual; v.18.1 to parse and process molecular dynamics simulations.  
 
-Data analysis examples do not require schrodigner and only have to meet the python dependencies.
-
+Example descriptors have been precomputed and do not require Schrodinger.
 
 ## Transformers
 
