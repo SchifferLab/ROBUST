@@ -6,7 +6,7 @@ Add Description
 
 ## Requirements
 
-ROBUST Transformers utilizes the [Schrodinger Python Api](https://www.schrodinger.com/pythonapi) to parse and process molecular dynamics simulations. &gt v.18.1 
+ROBUST Transformers utilizes the [Schrodinger Python Api](https://www.schrodinger.com/pythonapi) to parse and process molecular dynamics simulations. \ge v.18.1 
 
 Data analysis examples do not require schrodigner and only have to meet the python dependencies.
 
