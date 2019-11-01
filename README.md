@@ -40,7 +40,7 @@ All transformers can be imported into a python script or jupyter notebook. An ex
 
 #### From the PLDB
 
-All transformers  can be incorporated into a PLDB pipeline. For details on our in-house analysis pipeline contact [Flo](florian.leidner@umassmed.edu)
+All transformers  can be incorporated into a PLDB pipeline. For details on our in-house analysis pipeline contact Florian Leidner.
 
 
 ## Examples
