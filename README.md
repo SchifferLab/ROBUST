@@ -6,9 +6,16 @@ Add Description
 
 ## Requirements
 
-Transformers require [Schrodinger](https://www.schrodinger.com) &GreaterEqual; v.18.1 to process molecular dynamics simulations.  
+* python &ge; 2.7
+* numpy
+* pandas
+* scipy
+* scikit-learn
+* [Schrodinger](https://www.schrodinger.com) &ge; v.18.1 
 
-Example descriptors have been precomputed and do not require Schrodinger.
+Schrodinger is required to process molecular dynamic.
+
+For examples, the descriptors have been precomputed thus the examples do not require Schrodinger.
 
 ## Transformers
 
@@ -40,12 +47,8 @@ All transformers  can be incorporated into a PLDB pipeline. For details on our i
 
 #### DHFR
 
-Application of pMD and ROBUST to identify Trimethoprim resistant dihydrofolate reductase. Inhibitor data was taken form Queener et al.[1]
+Application of pMD and ROBUST to identify Trimethoprim resistant dihydrofolate reductase variants
 
-
-## References
-
-[1] Queener SF, Cody V, Pace J, Torkelson P, Gangjee A. Trimethoprim resistance of dihydrofolate reductase variants from clinical isolates of Pneumocystis jirovecii. Antimicrobial agents and chemotherapy. 2013 Oct 1;57(10):4990-8.
 
 ## Contact
 
