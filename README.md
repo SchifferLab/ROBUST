@@ -1,5 +1,11 @@
 # ROBUST
 
+Molecular dynamics simulations are well suited for studying molecular recognition. A key challenge is the derivation of meaningful descriptors from the raw MD coordinates.
+   
+ROBUST provides a set tools to calculate physics based descriptors from molecular dynamics simulations.
+
+Along with the transformers we provide a number of examples cases.
+
 ----------------------
 Add Description
 
