@@ -138,7 +138,6 @@ def preprocess_rms(api, dataset, data_type=None):
                             continue
                         label = '#{}'.format(an)
                         df_rms.loc[stid, label] = x
-    df_rms.index = dataset.structure_id
     return df_rms
 
 
@@ -429,9 +428,8 @@ def preprocess_hbond(api, dataset, data_type=None):
 
         frequency_df = _load_hbonds(cms_model, data, ligand_resid=ligand_resid)
         for fi in frequency_df.index:
-            hbonds_df.loc[index, fi] = frequency_df.loc[fi, 'frequency']
+            hbonds_df.loc[stid, fi] = frequency_df.loc[fi, 'frequency']
     hbonds_df.fillna(0, inplace=True)
-    hbonds_df.index = dataset.structure_id
     return hbonds_df
 
 
@@ -517,9 +515,8 @@ def preprocess_torsion(api, dataset, data_type=None):
                 series = np.genfromtxt('torsion_{}.csv'.format(int(tid)), delimiter=',')
                 counts, bins = np.histogram(series, bins=bins)
                 freq = counts / np.sum(counts)
-                torsion_entropy.loc[index, torsion_label] = entropy(freq)
+                torsion_entropy.loc[stid, torsion_label] = entropy(freq)
         os.chdir(cwd)
-    torsion_entropy.index = dataset.structure_id
     return torsion_entropy
 
 
@@ -556,7 +553,7 @@ def main(args):
         if password is None:
             password = getpass.getpass()
         logger.info('Connecting to PLDB endpoint: {}'.format(endpoint))
-        api = pldb_client(endpoint, username, password)
+        api = pldb_client(endpoint, username, password, logger)
 
     descriptors = args.descriptors
     logger.info('Descriptors:' + '\n'.join(descriptors))
