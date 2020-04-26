@@ -687,7 +687,6 @@ def parse_args():
                         help='custom group parameters.\n Example: {mode: "w", asl: {0: "protein",'
                              ' 1: "ligand"}, group_id: {0: "protein", 1: "ligand"}}')
     parser.add_argument('--cpu',
-                        type=bool,
                         default=False,
                         action='store_true',
                         help='Run desmond cpu, this requires the deprecated DESMOND_MAIN license token'
