@@ -261,11 +261,10 @@ def parse_args():
                         dest='nframes',
                         default=20,
                         help='Number of snapshots to use in calculation')
-    parser.add_argument('-n',
-                        '--nproc',
+    parser.add_argument('--nproc',
                         type=int,
                         dest='nproc',
-                        default=8,
+                        default=4,
                         help='Number of cores to use for calculation.\nDefault: 8')
     parser.add_argument('-l',
                         '--ligand_asl',
