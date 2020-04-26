@@ -344,7 +344,7 @@ def parse_args():
     parser.add_argument('infiles',
                         type=str,
                         nargs='+',
-                        help='cms file, trajaectory and optional ligand structure')
+                        help='cms file, trajectory and optional ligand structure')
     parser.add_argument('--prefix',
                         type=str,
                         dest='prefix',
@@ -356,7 +356,6 @@ def parse_args():
                         dest='nproc',
                         default=3,
                         help='Number of cores to use for calculation.\nDefault: 3')
-
     return parser.parse_args()
 
 
