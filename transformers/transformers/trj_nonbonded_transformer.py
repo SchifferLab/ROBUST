@@ -688,7 +688,7 @@ def parse_args():
                              ' 1: "ligand"}, group_id: {0: "protein", 1: "ligand"}}')
     parser.add_argument('--cpu',
                         type=bool,
-                        defaults=False,
+                        default=False,
                         action='store_true',
                         help='Run desmond cpu, this requires the deprecated DESMOND_MAIN license token'
                         )
