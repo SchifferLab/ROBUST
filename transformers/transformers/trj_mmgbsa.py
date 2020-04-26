@@ -187,7 +187,7 @@ def _process(structure_dict):
 
     # Get ligand-receptor complex from trj
 
-    structures = extract_st(cms_file, trj_dir, asl='protein or {}'.format(ligand_asl), frames=NFRAMES)
+    structures = extract_st(cms_file, trj_dir, asl='protein or ({})'.format(ligand_asl), frames=NFRAMES)
 
     if NFRAMES<NPROC:
         njobs = NFRAMES
