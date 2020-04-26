@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 NPROC = 16
 STEP = 2  # Process every nth frame
-ASL_SOLVENT = 'solvent'  # solvent molecules in maestro asl
+LIGAND_ASL
+SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
 
 
 class BlockAverage(multiprocessing.Process):
@@ -149,7 +150,7 @@ class HydrongeBondAnalysis(multiprocessing.Process):
             self.ndx = ndx
 
         # Get atom gids for solvent
-        self.ndx_water = topo.asl2gids(self.cms_model, ASL_SOLVENT)
+        self.ndx_water = topo.asl2gids(self.cms_model, SOLVENT_ASL)
 
         # Load framelist
         if frames is not None:
@@ -425,7 +426,10 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
     :param calculate_error:
     :param frequency_cutoff:
     :param is_water_mediated:
-    :return:
+    :return df: Mean hydrogen bonds
+    :rtype df: pd.DataFrame
+    :return data_raw: Raw hydrogen bond data
+    rtype data_raw: pd.DataFrame
     """
 
     atom_pair_id = []
@@ -503,6 +507,12 @@ def _process(structure_dict):
     cms_file = structure_dict['files']['desmond_cms']
 
     msys_model, cms_model = topo.read_cms(str(cms_file))
+    if LIGAND_ASL is None:
+        logger.info('Calculating all intra and intermolecular hydrogen bonds')
+        ligand_ndx=None
+    else:
+        logger.info('Calculating hydrogen bonds between system and: {}'.format(LIGAND_ASL))
+        ligand_ndx = topo.asl2gids(cms_model, LIGAND_ASL)
     logger.info('Unpacking trajectory frame set')
     trjtar = structure_dict['files']['desmond_trjtar']
 
@@ -531,7 +541,7 @@ def _process(structure_dict):
     workers = []
     queue = multiprocessing.Queue()
     for i, frames in enumerate(frame_list):
-        workers.append(HydrongeBondAnalysis(i, queue, cms_file, trj_dir, frames=frames))
+        workers.append(HydrongeBondAnalysis(i, queue, cms_file, trj_dir, frames=frames, ndx=ligand_ndx))
         workers[i].start()
 
     # get results
@@ -639,6 +649,14 @@ def parse_args():
                         dest='step',
                         default=2,
                         help='Process every X steps of the trajectory.\nDefault: 2 ')
+    parser.add_argument('-l',
+                        '--ligand_asl',
+                        type=str,
+                        dest='ligand_asl',
+                        default=None,
+                        help='Atom selection string specifying the ligand atoms. If provided only \
+                             hydrogen bonds with the atoms identified as belonging to the ligand \
+                              will be considered')
 
     return parser.parse_args()
 
@@ -666,9 +684,11 @@ def main(args):
 
     global NPROC
     global STEP
+    global LIGAND_ASL
 
     NPROC = args.nproc
     STEP = args.step
+    LIGAND_ALS = args.ligand_asl
 
     cms_file, trj = args.infiles
     prefix = args.prefix
