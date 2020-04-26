@@ -24,7 +24,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NPROC = 12  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
+NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
+CPU = False # Run desmond CPU, this requires the deprecated DESMOND_MAIN license token
 MAX_GROUPS = 999
 ENERGY_COMPONENTS = ['nonbonded_elec', 'nonbonded_vdw']
 
@@ -108,7 +109,8 @@ class VRUN(object):
     """
     ENERGY_GROUP_PREFIX = 'i_ffio_grp_energy'
 
-    def __init__(self, cms_model, trj, cfg_file, groups):
+    def __init__(self, cms_model, trj, cfg_file, groups, cpu=False):
+        self.cpu = cpu # Run desmond cpu (Deprecated)
         self.cms_model = cms_model
         self.trj = trj
         # parse input cfg
@@ -194,7 +196,7 @@ class VRUN(object):
             if t_interval:
                 new_cfg.update('backend.vrun.plugin.energy_groups.interval={}'.format(t_interval))
 
-            new_cfg.update('backend.vrun.plugin.energy_groups.options = [pressure_tensor self_energy corr_energy]')
+            new_cfg.update('backend.vrun.plugin.energy_groups.options = [pressure_tensor corr_energy]')
             # input cms file
             new_cfg.update('backend.vrun.plugin.maeff_output.bootfile="{}"'.format(os.path.abspath(self.cmsfile)))
             # write cfg to file
@@ -218,10 +220,15 @@ class VRUN(object):
                '-in', str(self.cmsfile),
                '-c', self.cfgfile]
 
+        if not self.cpu:
+            cmd.append('-gpu')
+
         if host is not None:
             logger.info('submittign job to: {}'.format(host))
             cmd.append('-HOST')
             cmd.append(host)
+        else:
+            cmd.extend(['-HOST', 'localhost'])
 
         logger.info('$SCHRODINGER/' + ' '.join(cmd))
         job = jobcontrol.launch_job(cmd)
@@ -541,7 +548,7 @@ def _process(structure_dict):
     # calculate energy terms
     nproc = dynamic_cpu_assignment(NPROC, desmond=True)
 
-    vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups)
+    vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups, cpu=CPU)
     vrun_out = vrun_obj.calculate_energy(outname, nproc=nproc)
 
     # if vrun successful create output files
@@ -596,12 +603,10 @@ def _process(structure_dict):
                 results[comp]['keys'].append(list(pair))
                 results[comp]['mean_potential'].append(np.mean(energy))
                 data_dict[pair] = energy  # Only store non-zero energies
+
             # Calculate the error separately over multiple processes
-            if NPROC < 1.0:
-                n = dynamic_cpu_assignment(NPROC)
-            else:
-                n = NPROC
-            error_dict = _get_error(data_dict, n)
+            nproc = dynamic_cpu_assignment(NPROC)
+            error_dict = _get_error(data_dict, nproc)
             for k in results[comp]['keys']:
                 results[comp]['error'].append(error_dict[tuple(k)])
 
@@ -681,6 +686,12 @@ def parse_args():
                         default=None,
                         help='custom group parameters.\n Example: {mode: "w", asl: {0: "protein",'
                              ' 1: "ligand"}, group_id: {0: "protein", 1: "ligand"}}')
+    parser.add_argument('--cpu',
+                        type=bool,
+                        defaults=False,
+                        action='store_true',
+                        help='Run desmond cpu, this requires the deprecated DESMOND_MAIN license token'
+                        )
     parser.add_argument('-n',
                         '--nproc',
                         type=int,
@@ -713,8 +724,14 @@ def get_logger():
 def main(args):
 
     global NPROC
-
+    global CPU
+    CPU = args.cpu
     NPROC = args.nproc
+    if CPU:
+        logger.warning('Running Desmond_cpu, this requires the DESMOND_MAIN license token')
+    else:
+        logger.info('Running Desmond_gpu')
+        NPROC=1
     prefix = args.prefix
     cmsfile, trjtar, cfgfile = args.infiles
     nonbonded_params = args.params
@@ -724,13 +741,14 @@ def main(args):
             'desmond_cms': cmsfile,
             'desmond_trjtar': trjtar,
             'desmond_cfg': cfgfile,
-            'nonbonded_params': nonbonded_params
         },
             'structure': {'code': prefix,
                           'structure_id': 0},
             'custom': {}
         }
     ]
+    if nonbonded_params is not None:
+        structure_dict_list[0]['nonbonded_params'] = nonbonded_params
     for sd in run(structure_dict_list):
         with open('{}_trj_nonbonded_transformer.json'.format(prefix), 'w') as outfile:
             json.dump(sd, outfile)
