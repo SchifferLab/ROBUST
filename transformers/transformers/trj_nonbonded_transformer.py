@@ -216,12 +216,13 @@ class VRUN(object):
 
         cmd = ['desmond',
                '-JOBNAME', jobname,
-               '-PROCS', str(nproc),
                '-in', str(self.cmsfile),
                '-c', self.cfgfile]
 
         if not self.cpu:
-            cmd.append('-gpu')
+            cmd.extend(['-PROCS', '1', '-gpu'])
+        else:
+            cmd.extend(['-PROCS', str(nproc)])
 
         if host is not None:
             logger.info('submittign job to: {}'.format(host))
@@ -730,7 +731,6 @@ def main(args):
         logger.warning('Running Desmond_cpu, this requires the DESMOND_MAIN license token')
     else:
         logger.info('Running Desmond_gpu')
-        NPROC=1
     prefix = args.prefix
     cmsfile, trjtar, cfgfile = args.infiles
     nonbonded_params = args.params
