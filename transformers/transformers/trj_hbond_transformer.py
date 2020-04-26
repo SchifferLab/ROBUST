@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 NPROC = 16
 STEP = 2  # Process every nth frame
-LIGAND_ASL
+LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
 
 
@@ -152,7 +152,7 @@ class HydrongeBondAnalysis(multiprocessing.Process):
         # Get atom gids for solvent
         self.ndx_water = topo.asl2gids(self.cms_model, SOLVENT_ASL)
 
-        # Load framelist
+        # Load frame list
         if frames is not None:
             self.frame_list = [frame for (i, frame) in enumerate(traj.read_traj(str(trj_dir))) if i in frames]
         else:
@@ -274,7 +274,7 @@ class HydrongeBondAnalysis(multiprocessing.Process):
             aangle = self.angle(p[acceptor], p[donor], p[a])
             if aangle < self.acceptor_angle:
                 return False
-        # Congratulation, you are indeed a hydrogenbond
+        # Congratulation, you are indeed a hydrogen bond
         return True
 
     def water_mediated_hbond(self, i, f, n1, n2, dist_tree):
@@ -300,9 +300,9 @@ class HydrongeBondAnalysis(multiprocessing.Process):
                 if n3 in [n1] + r2_atoms:
                     continue
                 # Only check water mediated hydrogen bonds with heavy atoms
-                if n3 in self.ndx:
+                if n3 not in self.ndx_water:
                     if self.match_hbond(a2, n3, pos):
-                        # If interaction has been pbserved previously set frame f to 1
+                        # If interaction has been observed previously set frame f to 1
                         if (n1, n3) in self.water_mediated_out:
                             self.water_mediated_out[(n1, n3)][i] = 1.
                         elif (n3, n1) in self.water_mediated_out:
@@ -508,7 +508,7 @@ def _process(structure_dict):
 
     msys_model, cms_model = topo.read_cms(str(cms_file))
     if LIGAND_ASL is None:
-        logger.info('Calculating all intra and intermolecular hydrogen bonds')
+        logger.info('Calculating all intra- and intermolecular hydrogen bonds')
         ligand_ndx=None
     else:
         logger.info('Calculating hydrogen bonds between system and: {}'.format(LIGAND_ASL))
@@ -688,7 +688,7 @@ def main(args):
 
     NPROC = args.nproc
     STEP = args.step
-    LIGAND_ALS = args.ligand_asl
+    LIGAND_ASL = args.ligand_asl
 
     cms_file, trj = args.infiles
     prefix = args.prefix
