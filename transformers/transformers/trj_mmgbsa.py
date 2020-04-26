@@ -18,7 +18,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NPROC = 12  # Split into at most X subjobs
+NPROC = 8  # Split into at most X subjobs
 NFRAMES = 100  # Number of frames use for mmgbsa calculation
 LIGAND_ASL = None  # Set to overwrite automatic ligand detection
 
@@ -261,6 +261,12 @@ def parse_args():
                         dest='nframes',
                         default=20,
                         help='Number of snapshots to use in calculation')
+    parser.add_argument('-n',
+                        '--nproc',
+                        type=int,
+                        dest='nproc',
+                        default=8,
+                        help='Number of cores to use for calculation.\nDefault: 8')
     parser.add_argument('-l',
                         '--ligand_asl',
                         type=str,
@@ -294,11 +300,13 @@ def get_logger():
 def main():
 
     global NFRAMES
+    global NPROC
     global LIGAND_ASL
 
     args = parse_args()
 
     NFRAMES = args.nframes
+    NPROC = args.nproc
     LIGAND_ASL = args.ligand_asl
     prefix = args.prefix
     if len(args.infiles) == 2:
