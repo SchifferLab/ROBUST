@@ -216,15 +216,16 @@ class HydrongeBondAnalysis(multiprocessing.Process):
                 # NOTE this class returns true for the donor heavy atom
                 if mm.mmct_hbond_is_donor(self.cms_model, da.index):
                     # Convert back to pythonic indices
-                    self.donor[a.index - 1] = da.index - 1
+                    self.donor[topo.aids2gids(self.cms_model, [a.index])[0]] = \
+                        topo.aids2gids(self.cms_model, [da.index])[0]
             else:
                 if mm.mmct_hbond_is_acceptor(self.cms_model, a.index):
                     # If a == acceptor get list of bonded atoms
                     acc_att_list = []
                     for acceptor_neighbor in a.bonded_atoms:
                         if acceptor_neighbor.atom_type != 63:  # If not lone pair
-                            acc_att_list.append(acceptor_neighbor.index - 1)
-                    self.acceptor[a.index - 1] = acc_att_list
+                            acc_att_list.append(topo.aids2gids(self.cms_model, [acceptor_neighbor.index])[0])
+                    self.acceptor[topo.aids2gids(self.cms_model, [a.index])[0]] = acc_att_list
 
     def _set_bonded_atoms(self):
         """
@@ -429,7 +430,7 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
     :return df: Mean hydrogen bonds
     :rtype df: pd.DataFrame
     :return data_raw: Raw hydrogen bond data
-    rtype data_raw: pd.DataFrame
+    :rtype data_raw: pd.DataFrame
     """
 
     atom_pair_id = []
