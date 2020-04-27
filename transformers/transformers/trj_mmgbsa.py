@@ -13,7 +13,6 @@ from schrodinger.job import jobcontrol
 from schrodinger.application.desmond.packages import topo, traj
 from schrodinger.structutils.analyze import find_ligands, evaluate_asl
 
-
 import logging
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,6 @@ def get_ligand_asl(structure_dict):
     """
 
     ligand_mae = structure_dict['files'].get('ligand_mae')
-
 
     if ligand_mae is None:
         cms = str(structure_dict['files'].get('desmond_cms'))
@@ -76,9 +74,9 @@ def extract_st(cms_file, trj_dir, asl='all', frames=1):
     msys_model, cms_model = topo.read_cms(cms_file)
     frame_arch = traj.read_traj(trj_dir)
     if type(frames) == int:
-        for f in np.linspace(0, len(frame_arch)-1, frames).astype(int):
+        for f in np.linspace(0, len(frame_arch) - 1, frames).astype(int):
             st = topo.update_cms(cms_model, frame_arch[f])
-            st = st.extract(evaluate_asl(cms_model,asl))
+            st = st.extract(evaluate_asl(cms_model, asl))
             st.title = 'Frame {}'.format(f)
             structures.append(st)
     else:
@@ -114,7 +112,7 @@ def run_mmgbsa(structures, ligand_asl, njobs=1):
             st.append(infile)
         inp.append(jobname)
 
-        args = [MMGBSA_CMD, infile,]
+        args = [MMGBSA_CMD, infile, ]
 
         mmgbsa_options = copy.copy(MMGBSA_OPTIONS)
 
@@ -125,9 +123,8 @@ def run_mmgbsa(structures, ligand_asl, njobs=1):
         for kv in mmgbsa_options.items():
             args.extend(kv)
 
-
         logger.info('Running Prime MMGBSA:')
-        logger.info('$SCHRODINGER/'+' '.join(args))
+        logger.info('$SCHRODINGER/' + ' '.join(args))
 
         job = jobcontrol.launch_job(args)
         jobs.append(job)
@@ -137,9 +134,10 @@ def run_mmgbsa(structures, ligand_asl, njobs=1):
         if job.succeeded():
             outfiles.append(job.getOutputFiles())
         else:
-            raise  RuntimeError('ProteinPreparationWizard failed with {}'.format(job.ExitStatus))
+            raise RuntimeError('ProteinPreparationWizard failed with {}'.format(job.ExitStatus))
 
     return outfiles
+
 
 def _process(structure_dict):
     """
@@ -157,7 +155,7 @@ def _process(structure_dict):
         pipeline = structure_dict['custom']['pipeline']
         fork = [pipeline[0], ]
         if len(pipeline) == 1:
-            del(structure_dict['custom']['pipeline'])
+            del (structure_dict['custom']['pipeline'])
         else:
             structure_dict['custom']['pipeline'] = pipeline[1:]
 
@@ -189,7 +187,7 @@ def _process(structure_dict):
 
     structures = extract_st(cms_file, trj_dir, asl='protein or ({})'.format(ligand_asl), frames=NFRAMES)
 
-    if NFRAMES<NPROC:
+    if NFRAMES < NPROC:
         njobs = NFRAMES
     else:
         njobs = NPROC
@@ -211,11 +209,9 @@ def _process(structure_dict):
                 df = pd.concat([df, pd.read_csv(f, sep=',', index_col=0)], axis=0)
     df.to_csv(csv_file, sep=',')
 
-
     with tarfile.open(outfile, mode='w:gz') as tar:
         tar.add(mae_file)
         tar.add(csv_file)
-
 
     transformer_dict = {
         'structure': {
@@ -229,6 +225,7 @@ def _process(structure_dict):
         transformer_dict['control'] = {'forks': fork}
 
     yield transformer_dict
+
 
 def run(structure_dict_list):
     for structure_dict in structure_dict_list:
@@ -297,7 +294,6 @@ def get_logger():
 
 
 def main():
-
     global NFRAMES
     global NPROC
     global LIGAND_ASL
@@ -345,5 +341,6 @@ def main():
 
 if __name__ == '__main__':
     import argparse
+
     logger = get_logger()
     main()
