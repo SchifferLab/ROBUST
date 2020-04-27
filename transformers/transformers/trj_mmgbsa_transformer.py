@@ -250,19 +250,20 @@ def parse_args():
     parser.add_argument('--prefix',
                         type=str,
                         dest='prefix',
-                        default='similarity_search',
+                        default='trj_mmgbsa',
                         help='Outfile prefix')
-    parser.add_argument('-n',
-                        '--nframes',
+    parser.add_argument('-f',
+                        '--frames',
                         type=int,
                         dest='nframes',
                         default=20,
                         help='Number of snapshots to use in calculation')
-    parser.add_argument('--nproc',
+    parser.add_argument('-n',
+                        '--nproc',
                         type=int,
                         dest='nproc',
                         default=4,
-                        help='Number of cores to use for calculation.\nDefault: 8')
+                        help='Number of cores to use for calculation.\nDefault: 4')
     parser.add_argument('-l',
                         '--ligand_asl',
                         type=str,
@@ -274,11 +275,10 @@ def parse_args():
 
 
 def get_logger():
-    cwd = os.getcwd()
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
     # create file handler which logs even debug messages
-    fh = logging.FileHandler(os.path.join(cwd, os.path.split(__file__)[-1][:-3] + '.log'), mode='w')
+    fh = logging.FileHandler(os.path.join('./', os.path.split(__file__)[-1][:-3] + '.log'), mode='w')
     fh.setLevel(logging.INFO)
     # create console handler with a higher log level
     ch = logging.StreamHandler()
@@ -309,22 +309,6 @@ def main():
         ligand_mae = None
     else:
         cmsfile, trjtar, ligand_mae = args.infiles
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
-    # create file handler which logs even debug messages
-    fh = logging.FileHandler(os.path.join(os.getcwd(), ''.join(__file__.split('.')[:-1]) + '.log'))
-    fh.setLevel(logging.INFO)
-    # create console handler with a higher log level
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.ERROR)
-    # create formatter and add it to the handlers
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    fh.setFormatter(formatter)
-    ch.setFormatter(formatter)
-    # add the handlers to the logger
-    logger.addHandler(fh)
-    logger.addHandler(ch)
 
     structure_dict_list = [{'structure': {'code': prefix,
                                           'structure_id': 0},
