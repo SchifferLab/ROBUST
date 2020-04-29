@@ -283,7 +283,7 @@ def _process(structure_dict):
                                           'calculation_type': 'rmsf'})
     else:
         ligand_st = structure.Structure.read(str(ligand_mae))
-        ligand_asl = '( ' + ' or '.join(['(r.ptype {} and c. {})'.format(res.pdbres, res.chain) for res in
+        ligand_asl = '( ' + ' or '.join(['(r.ptype {} and c. "{}")'.format(res.pdbres, res.chain) for res in
                                          ligand_st.residue]) + ' ) and not a.element H'
         calculation_param.append({'name': 'ligand_rmsf',
                                   'ref': None,
