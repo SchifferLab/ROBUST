@@ -274,7 +274,7 @@ def _process(structure_dict):
         ligands = find_ligands(cms_model)
         if len(ligands) != 0:
             for ligand in ligands:
-                ligand_asl = ' or '.join(['(r. {} and c. {} and not a.element H )'.format(res.resnum, res.chain)
+                ligand_asl = ' or '.join(['(r. {} and c. "{}" and not a.element H )'.format(res.resnum, res.chain)
                                           for res in ligand.st.residue])
                 calculation_param.append({'name': 'ligand_rmsf',
                                           'ref': None,

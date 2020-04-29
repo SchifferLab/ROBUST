@@ -48,7 +48,7 @@ def get_ligand_asl(structure_dict):
         ligands = find_ligands(st)
         if len(ligands) != 0:
             for ligand in ligands:
-                ligand_asl = ' or '.join(['(r. {} and c. {})'.format(res.resnum, res.chain)
+                ligand_asl = ' or '.join(['(r. {} and c. "{}")'.format(res.resnum, res.chain)
                                           for res in ligand.st.residue])
         else:
             raise ValueError('No ligand found')
