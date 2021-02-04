@@ -9,6 +9,8 @@ import psutil
 import tarfile
 import time
 import itertools
+import subprocess
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import scipy as sp
@@ -24,6 +26,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+HOST = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
+USER = 'pldbuser'
 NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
 CPU = False # Run desmond CPU, this requires the deprecated DESMOND_MAIN license token
 MAX_GROUPS = 999
@@ -244,6 +248,8 @@ class VRUN(object):
         :param host:<str> The name of the host machine
         :return:
         """
+        if host is None:
+            host = 'localhost'
         job = self._launch_vrun(jobname, nproc=nproc, host=host)
         # wait for job to finish
         job.wait()
@@ -255,6 +261,9 @@ class VRUN(object):
 
 def get_desmond_cpus(n_cpus):
     """
+
+    Legacy code: This is no longer required since schrodinger/desmond no longer supports cpus
+
     Desmond distributes cpus accross the x, y and Z axis.
     It can only use 2, 3 or 5 or the powers fo these numbers.
     Example: X->2cpus, Y->cpus, Z->5cpus  Total: 30 cpus
@@ -274,6 +283,9 @@ def get_desmond_cpus(n_cpus):
 
 def dynamic_cpu_assignment(n_cpus, desmond=False):
     """
+
+    Legacy code, this is no longer required because schrodinger/desmond no longer supports cpus
+
     Return the number of CPUs to use.
     If n_cpus is less than zero it is treated as a fraction of the available CPUs
     If n_cpus is more than zero it will simply return n_cpus
@@ -444,12 +456,64 @@ def _get_solute_by_res(cms_model):
     return atom_groups, resids
 
 
+def get_remote_gpu_util(host, user, gpuid=0, ssh_timeout=90, cmd_timeout=90):
+    """
+    Get gpu usage on remote host
+    Adapted from:
+    https://github.com/mseitzer/gpu-monitor
+    """
+    pass
+    # SSH command
+    ssh_cmd = 'ssh -o "ConnectTimeout={ssh_timeout}" {server} timeout {cmd_timeout}'.format()
+
+    # Command for running nvidia-smi locally
+    nvidiasmi_cmd = 'nvidia-smi -q -x'
+
+    # Command for running nvidia-smi remotely
+    cmd = '{} {}'.format(ssh_cmd, nvidiasmi_cmd)
+
+    logger.debug('Running command: "{}"'.format(cmd))
+
+    try:
+        res = subprocess.check_output(cmd, shell=True)
+    except subprocess.TimeoutExpired as e:
+        logger.error(('Command timeouted with output "{}", '
+               'and stderr "{}"'.format(e.output.decode('utf-8'), e.stderr)))
+        raise  # TODO
+    except subprocess.CalledProcessError as e:
+        logger.error(('Command failed with exit code {}, output "{}", '
+               'and stderr "{}"'.format(e.returncode,
+                                        e.output.decode('utf-8'),
+                                        e.stderr)))
+        raise  # TODO
+    return ET.fromstring(res)
+
+
+
+def get_host(hosts, user):
+    """
+    Docstring
+    :param hosts
+    :param user
+    :return:
+    """
+
+    if isinstance(hosts, str):
+        return hosts
+    elif isinstance(hosts, list):
+        for host in hosts:
+            # TODO
+            return host
+
+
 def _process(structure_dict):
     """
     DocString
     :param structure_dict:
     :return:
     """
+
+    host = get_host(HOST, user=USER)
     fork = None
     # Check if transformers is called as part of a pipeline
     if 'pipeline' in structure_dict['custom']:
@@ -550,7 +614,7 @@ def _process(structure_dict):
     nproc = dynamic_cpu_assignment(NPROC, desmond=True)
 
     vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups, cpu=CPU)
-    vrun_out = vrun_obj.calculate_energy(outname, nproc=nproc)
+    vrun_out = vrun_obj.calculate_energy(outname, nproc=nproc, host=host)
 
     # if vrun successful create output files
     if vrun_out[0]:
@@ -698,6 +762,17 @@ def parse_args():
                         dest='nproc',
                         default=16,
                         help='Number of cores to use for calculation.\nDefault: 16')
+    parser.add_argument('-h',
+                        '--host',
+                        type=int,
+                        dest='host',
+                        default='localhost',
+                        help='Host to run schrodinger/desmond on')
+    parser.add_argument('-u',
+                        '--user',
+                        type=str,
+                        default='pldbuser',
+                        help='Username to submit remote jobs under')
 
     return parser.parse_args()
 
@@ -725,8 +800,14 @@ def main(args):
 
     global NPROC
     global CPU
+    global HOST
+    global USER
+
     CPU = args.cpu
     NPROC = args.nproc
+    HOST = args.host
+    USER = args.user
+
     if CPU:
         logger.warning('Running Desmond_cpu, this requires the DESMOND_MAIN license token')
     else:
