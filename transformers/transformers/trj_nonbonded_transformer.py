@@ -9,7 +9,7 @@ import psutil
 import tarfile
 import time
 import itertools
-import subprocess
+
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -25,6 +25,11 @@ from schrodinger.application.desmond.cms import AtomGroup
 import logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    import paramiko
+except:
+    logger.warning('Could not import paramiko, remote jobs will be submitted without checking gpu usage')
 
 HOST = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
 USER = 'pldbuser'
@@ -454,40 +459,6 @@ def _get_solute_by_res(cms_model):
             atom_groups.append(aids)
             resids.append((res.resnum, res.chain.strip()))
     return atom_groups, resids
-
-
-def get_remote_gpu_util(host, user, gpuid=0, ssh_timeout=90, cmd_timeout=90):
-    """
-    Get gpu usage on remote host
-    Adapted from:
-    https://github.com/mseitzer/gpu-monitor
-    """
-    pass
-    # SSH command
-    ssh_cmd = 'ssh -o "ConnectTimeout={ssh_timeout}" {server} timeout {cmd_timeout}'.format()
-
-    # Command for running nvidia-smi locally
-    nvidiasmi_cmd = 'nvidia-smi -q -x'
-
-    # Command for running nvidia-smi remotely
-    cmd = '{} {}'.format(ssh_cmd, nvidiasmi_cmd)
-
-    logger.debug('Running command: "{}"'.format(cmd))
-
-    try:
-        res = subprocess.check_output(cmd, shell=True)
-    except subprocess.TimeoutExpired as e:
-        logger.error(('Command timeouted with output "{}", '
-               'and stderr "{}"'.format(e.output.decode('utf-8'), e.stderr)))
-        raise  # TODO
-    except subprocess.CalledProcessError as e:
-        logger.error(('Command failed with exit code {}, output "{}", '
-               'and stderr "{}"'.format(e.returncode,
-                                        e.output.decode('utf-8'),
-                                        e.stderr)))
-        raise  # TODO
-    return ET.fromstring(res)
-
 
 
 def get_host(hosts, user):
