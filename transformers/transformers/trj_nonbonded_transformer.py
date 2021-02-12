@@ -4,17 +4,21 @@ import copy
 import re
 import os
 import json
-import multiprocessing
+import time
 import psutil
 import tarfile
-import time
-import itertools
+import multiprocessing
+
+import subprocess
+from subprocess import Popen
+
+from threading import Timer
 
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import scipy as sp
-import scipy.optimize
+from scipy.optimize import curve_fit
 
 from schrodinger.utils import sea
 from schrodinger.job import jobcontrol
@@ -23,93 +27,30 @@ import schrodinger.application.desmond.packages.topo as topo
 from schrodinger.application.desmond.cms import AtomGroup
 
 import logging
-
+logging.root.setLevel(logging.NOTSET)
 logger = logging.getLogger(__name__)
 
-try:
-    import paramiko
-except:
-    logger.warning('Could not import paramiko, remote jobs will be submitted without checking gpu usage')
-
-HOST = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
-USER = 'pldbuser'
+HOSTS = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
 NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
-CPU = False # Run desmond CPU, this requires the deprecated DESMOND_MAIN license token
 MAX_GROUPS = 999
 ENERGY_COMPONENTS = ['nonbonded_elec', 'nonbonded_vdw']
+RAW = True # Whether to save raw output files
+DEBUG = False # Log Debug messages
 
+MONITOR_TIME = 120 # Interval over which to monitor GPU usage in seconds
+GPU_UTIL_THRESHOLD = 10 # Maximum average gpu usage over monitored time
+MEM_UTIL_THRESHOLD = 10 # Maximum average gpu memory usage over monitored time
+TIMEOUT = 7200 # Timeout for host search, transformer exits if it can't find a host within time
+SSH_TIMEOUT = 5 # Timeout for ssh
+CMD_TIMEOUT = 5 # Timeout for remote nvidia-smi call
 
-class BAVERAGES(multiprocessing.Process):
-    """
-    Give any 1d timeseries this class calculates the block averaged standard error
-    See:
-        Flyvbjerg, Henrik, and Henrik Gordon Petersen.
-        "Error estimates on averages of correlated data."
-        The Journal of Chemical Physics 91.1 (1989): 461-466.
-
-        Grossfield, Alan, and Daniel M. Zuckerman.
-        "Quantifying uncertainty and sampling quality in biomolecular simulations."
-         Annual reports in computational chemistry 5 (2009): 23-48.
-    """
-
-    def __init__(self, in_queue, out_queue, min_m=10):
-
-        multiprocessing.Process.__init__(self)
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-
-        self.min_m = min_m
-
-    def transform(self, data_array, block_length):
-        """
-        Provided with a series of values and (a) blocklength (l),
-        this function returns an series of block averages.
-        """
-
-        # If the array (a) is not a multple of l drop the first x values so that it becomes one
-        if len(data_array) % block_length != 0:
-            data_array = data_array[int(len(data_array) % block_length):]
-
-        o = []
-        for i in range(len(data_array) // int(block_length)):
-            o.append(np.mean(data_array[block_length * i:block_length + block_length * i]))
-
-        return np.array(o)
-
-    def run(self):
-
-        while True:
-            data = self.in_queue.get()
-            # poison pill
-            if data == 'STOP':
-                break
-            i, data_array = data
-            # blocksize 1 => full run
-            block_length = 2
-            blocks = np.array([1, ])
-            block_stderr = [np.std(data_array) / np.sqrt(len(data_array))]
-            # Transform the series until nblocks = 2
-            while len(data_array) // block_length >= self.min_m:
-                b = self.transform(data_array, block_length)
-                block_stderr.append(np.std(b) / np.sqrt(len(b)))
-                block_length += 1
-                if len(data_array) // block_length < self.min_m:
-                    blocks = np.arange(block_length - 1) + 1
-
-            # Simple exponential function
-            def model_func(x, p0, p1):
-                return p0 * (1 - np.exp(-p1 * x))
-
-            # Fit curve
-            opt_parms, parm_cov = sp.optimize.curve_fit(model_func, blocks, block_stderr, maxfev=2000)
-            error_estimate = opt_parms[0]
-            while True:
-                if self.out_queue.full():
-                    time.sleep(5)
-                else:
-                    self.out_queue.put([i, error_estimate])
-                    break
-        return
+# execute command remotely using SSH
+SSH_CMD = ('ssh -o "ConnectTimeout={ssh_timeout}" {server} '
+           'timeout {cmd_timeout}')
+# Command for running nvidia-smi locally
+NVIDIASMI_CMD = 'nvidia-smi -q -x'
+# Command for running nvidia-smi remotely
+REMOTE_NVIDIASMI_CMD = '{} {}'.format(SSH_CMD, NVIDIASMI_CMD)
 
 
 class VRUN(object):
@@ -118,8 +59,7 @@ class VRUN(object):
     """
     ENERGY_GROUP_PREFIX = 'i_ffio_grp_energy'
 
-    def __init__(self, cms_model, trj, cfg_file, groups, cpu=False):
-        self.cpu = cpu # Run desmond cpu (Deprecated)
+    def __init__(self, cms_model, trj, cfg_file, groups):
         self.cms_model = cms_model
         self.trj = trj
         # parse input cfg
@@ -186,7 +126,6 @@ class VRUN(object):
     def _write_cfg(self, fn, t_start=None, t_interval=None):
         """
         Prepare a desmond config file for vrun
-        (See page 30 Desmond user guide)
         """
         out_cfg = fn + '_vrun.cfg'
         with open(out_cfg, 'w') as f:
@@ -212,7 +151,7 @@ class VRUN(object):
             f.write(str(new_cfg))
         return out_cfg
 
-    def _launch_vrun(self, jobname, nproc=1, host='localhost'):
+    def _launch_vrun(self, jobname, nproc, host):
         """
         Launch a desmond vrun job
         :param jobname: <str> jobname
@@ -226,19 +165,13 @@ class VRUN(object):
         cmd = ['desmond',
                '-JOBNAME', jobname,
                '-in', str(self.cmsfile),
-               '-c', self.cfgfile]
+               '-c', self.cfgfile,
+               '-PROCS', '1',
+               '-gpu']
 
-        if not self.cpu:
-            cmd.extend(['-PROCS', '1', '-gpu'])
-        else:
-            cmd.extend(['-PROCS', str(nproc)])
-
-        if host is not None:
-            logger.info('submittign job to: {}'.format(host))
-            cmd.append('-HOST')
-            cmd.append(host)
-        else:
-            cmd.extend(['-HOST', 'localhost'])
+        logger.info('Running desomd/vrun')
+        cmd.append('-HOST')
+        cmd.append(host)
 
         logger.info('$SCHRODINGER/' + ' '.join(cmd))
         job = jobcontrol.launch_job(cmd)
@@ -264,38 +197,51 @@ class VRUN(object):
             return False, job.getOutputFiles()
 
 
-def get_desmond_cpus(n_cpus):
+class MonitorGpuUsage(object):
     """
-
-    Legacy code: This is no longer required since schrodinger/desmond no longer supports cpus
-
-    Desmond distributes cpus accross the x, y and Z axis.
-    It can only use 2, 3 or 5 or the powers fo these numbers.
-    Example: X->2cpus, Y->cpus, Z->5cpus  Total: 30 cpus
-
-    :param n_cpus:
-    :return:
+    Query gpu usage in x second intervals
+    This class is inspired by:
+    https://stackoverflow.com/questions/3393612/run-certain-code-every-n-seconds
     """
-    if n_cpus < 8:
-        return 1
-    allowed_n = [2, 4, 6, 8, 10, 12, 14, 3, 9, 15, 5]
-    combinations = np.array(list(itertools.product(allowed_n, allowed_n, allowed_n)))  # Get all combinations
-    products = np.array(list(map(np.product, combinations)))
-    difference = n_cpus - products
-    top_solution = products[difference >= 0][np.argmin(difference[difference >= 0])]
-    return top_solution
+    def __init__(self, server, interval, ssh_timeout, cmd_timeout):
+        self.server = server
+        self.interval = interval
+        self.ssh_timeout = ssh_timeout
+        self.cmd_timeout = cmd_timeout
+        self._timer     = None
+        self.is_running = False
+        self.start()
+        self.gpu_util = []
+        self.mem_util = []
+
+    def function(self):
+        nvidiasmi = run_nvidiasmi_remote(self.server, self.ssh_timeout, self.cmd_timeout)
+        gpu_util, mem_util = get_gpu_util(nvidiasmi)
+        self.gpu_util.append(gpu_util)
+        self.mem_util.append(mem_util)
+
+    def _run(self):
+        self.is_running = False
+        self.start()
+        self.function()
+
+    def start(self):
+        if not self.is_running:
+            self._timer = Timer(self.interval, self._run)
+            self._timer.start()
+            self.is_running = True
+
+    def stop(self):
+        self._timer.cancel()
+        self.is_running = False
 
 
-def dynamic_cpu_assignment(n_cpus, desmond=False):
+def dynamic_cpu_assignment(n_cpus):
     """
-
-    Legacy code, this is no longer required because schrodinger/desmond no longer supports cpus
-
     Return the number of CPUs to use.
     If n_cpus is less than zero it is treated as a fraction of the available CPUs
     If n_cpus is more than zero it will simply return n_cpus
     :param n_cpus:
-    :param desmond:
     :return:
     """
     if n_cpus >= 1:
@@ -311,43 +257,141 @@ def dynamic_cpu_assignment(n_cpus, desmond=False):
         nproc = free_cpus
     else:
         nproc = int(total_cpus * n_cpus)
-    if desmond:
-        return get_desmond_cpus(nproc)
 
-    elif nproc == 0:
+    if nproc == 0:
         return 1
     else:
         return nproc
 
 
+def bytes2str(inp):
+    """
+    Convert bytes to string if not string already
+    Required because Popen returns str in older versions but bytes in python 3+
+    """
+    if isinstance(inp, bytes):
+        return inp.decode('utf-8')
+    else:
+        return inp
+
+
+def run_cmd(cmd, timeout=10):
+    """
+    Run UNIX command with timeout
+    """
+
+    def kill(p):
+        try:
+            p.kill()
+        except OSError:
+            pass  # ignore
+
+    stdout = subprocess.PIPE
+    stderr = subprocess.PIPE
+    p = Popen([cmd], shell=True,
+              stdout=stdout,
+              stderr=stderr)
+    t = Timer(timeout, kill, [p])
+    t.start()
+    exit_code = p.wait()
+    t.cancel()
+    if exit_code:
+        raise RuntimeError('Exit Code: {}'.format(exit_code))
+    else:
+        return ''.join(list(map(bytes2str, p.stdout.readlines())))
+
+
+def run_nvidiasmi_remote(server, ssh_timeout, cmd_timeout):
+    cmd = REMOTE_NVIDIASMI_CMD.format(server=server,
+                                      ssh_timeout=ssh_timeout,
+                                      cmd_timeout=cmd_timeout)
+    res = run_cmd(cmd)
+    return ET.fromstring(res) if res is not None else None
+
+
+def get_gpu_util(nvidiasmi, gpuid=0):
+    """
+    Get gpu util from nvidiasmi command
+    """
+    gpu = nvidiasmi.findall('gpu')[gpuid]
+    util = gpu.find('utilization')
+    gpu_util = float(util.find('gpu_util').text.rstrip('%'))
+    mem_util = float(util.find('memory_util').text.rstrip('%'))
+    return gpu_util, mem_util
+
+
+def get_average_gpu_util(server, interval=5):
+
+    monitor = MonitorGpuUsage(server, interval, SSH_TIMEOUT, CMD_TIMEOUT)
+    monitor.start()
+    t = time.time()
+    while time.time()-t < MONITOR_TIME:
+        time.sleep(1)
+    monitor.stop()
+    avg_gpu_util = np.mean(monitor.gpu_util)
+    avg_mem_util = np.mean(monitor.mem_util)
+    return avg_gpu_util, avg_mem_util
+
+
+def get_gpu_host(hosts):
+    t = time.time()
+    while time.time()-t < TIMEOUT:
+        for host in hosts:
+            gpu_util, mem_util = get_average_gpu_util(host)
+            logger.debug('{} average gpu util: {}%'.format(host, gpu_util))
+            logger.debug('{} average memory util: {}%'.format(host, mem_util))
+            if gpu_util < GPU_UTIL_THRESHOLD and mem_util < MEM_UTIL_THRESHOLD:
+                return host
+    logger.error('Unable to find gpu host within {} seconds'.format(TIMEOUT))
+
+
+def block_averages(x, l):
+    """
+    Given a vector x return a vector x' of the block averages .
+    """
+
+    if l == 1:
+        return x
+
+    # If the array x is not a multiple of l drop the first x values so that it becomes one
+    if len(x) % l != 0:
+        x = x[int(len(x) % l):]
+
+    xp = []
+    for i in range(len(x) // int(l)):
+        xp.append(np.mean(x[l * i:l + l * i]))
+
+    return np.array(xp)
+
+
+def ste(x):
+    return np.std(x)/np.sqrt(len(x))
+
+
+def get_bse(x, min_blocks=3):
+
+    steps = np.max((1,len(x)//100))
+    stop = len(x)//min_blocks+steps
+
+    bse = []
+    for l in range(1, stop, steps):
+        xp = block_averages(x, l)
+        bse.append(ste(xp))
+
+    # Fit simple exponential to determine plateau
+    def model_func(x, p0, p1):
+        return p0 * (1 - np.exp(-p1 * x))
+
+    opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
+                                                (np.mean(bse), 0.1), maxfev=2000)
+
+    return opt_parms[0]
+
+
 def _get_error(data, nproc):
-    """
-    Docstring
-    :param data:
-    :param nproc:
-    :return:
-    """
-    combined_error = {}
-    id2key = {}
-
-    in_queue = multiprocessing.Queue()
-    out_queue = multiprocessing.Queue()
-    workers = [BAVERAGES(in_queue, out_queue) for _ in range(nproc)]
-    for w in workers:
-        w.start()
-
-    for i, (key, value) in enumerate(data.items()):
-        id2key[i] = key
-        in_queue.put([i, value])
-
-    for _ in range(len(data.keys())):
-        i, error = out_queue.get()
-        combined_error[id2key[i]] = error
-    for _ in range(nproc):
-        in_queue.put('STOP')
-    for w in workers:
-        w.join()
-    return combined_error
+    pool = multiprocessing.Pool(processes=nproc)
+    err = pool.map(get_bse, data.values())
+    return dict(list(zip(data.keys(), err)))
 
 
 def parse_output(filename, ngroups, energy_components, self_energy=False, correct_nb=True):
@@ -461,22 +505,6 @@ def _get_solute_by_res(cms_model):
     return atom_groups, resids
 
 
-def get_host(hosts, user):
-    """
-    Docstring
-    :param hosts
-    :param user
-    :return:
-    """
-
-    if isinstance(hosts, str):
-        return hosts
-    elif isinstance(hosts, list):
-        for host in hosts:
-            # TODO
-            return host
-
-
 def _process(structure_dict):
     """
     DocString
@@ -484,14 +512,13 @@ def _process(structure_dict):
     :return:
     """
 
-    host = get_host(HOST, user=USER)
     fork = None
     # Check if transformers is called as part of a pipeline
     if 'pipeline' in structure_dict['custom']:
         pipeline = structure_dict['custom']['pipeline']
         fork = [pipeline[0], ]
         if len(pipeline) == 1:
-            del(structure_dict['custom']['pipeline'])
+            del (structure_dict['custom']['pipeline'])
         else:
             structure_dict['custom']['pipeline'] = pipeline[1:]
 
@@ -580,12 +607,13 @@ def _process(structure_dict):
         atom_groups, group_ids = _get_solute_by_res(cms_model)
 
     logger.info('number of groups: {}'.format(len(atom_groups)))
+    logger.info('Finding free host')
+    logger.debug('Hosts: '+', '.join(HOSTS))
+    host = get_gpu_host(HOSTS)
 
-    # calculate energy terms
-    nproc = dynamic_cpu_assignment(NPROC, desmond=True)
-
-    vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups, cpu=CPU)
-    vrun_out = vrun_obj.calculate_energy(outname, nproc=nproc, host=host)
+    logger.info('Running desmond job on: {}'.format(host))
+    vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups)
+    vrun_out = vrun_obj.calculate_energy(outname, nproc=1, host=host)
 
     # if vrun successful create output files
     if vrun_out[0]:
@@ -598,33 +626,35 @@ def _process(structure_dict):
         if not energy_group_file:
             raise RuntimeError('No energy group file returned by desmond vrun')
 
-        # Write raw output
-        with open('{}_atom_groups.json'.format(_id), 'w') as f:
-            json.dump(atom_groups, f)
-        nonbonded_raw = structure_dict['files'].get('desmond_nonbonded_raw')
-        if nonbonded_raw is None:
-            with tarfile.open(outfile_raw, 'w:bz2') as tar:
-                for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
-                    tar.add(fn)
-        else:
-            with tarfile.open(nonbonded_raw, 'r:bz2') as tar:
-                tar.extractall()
-                members = tar.getmembers()
-            with tarfile.open(outfile_raw, 'w:bz2') as tar:
-                for member in members:
-                    filename = member.name
-                    if filename.split('_')[0] not in ('custom', 'default'):  # Backward Compatibility
-                        logger.warning('Updating file names to new version')
-                        os.rename(filename, 'default_'+filename)
-                        filename = 'default_'+filename
-                    tar.add(filename)
-                for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
-                    tar.add(fn)
+        if RAW:
+            # Write raw output
+            with open('{}_atom_groups.json'.format(_id), 'w') as f:
+                json.dump(atom_groups, f)
+            nonbonded_raw = structure_dict['files'].get('desmond_nonbonded_raw')
+            if nonbonded_raw is None:
+                with tarfile.open(outfile_raw, 'w:bz2') as tar:
+                    for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
+                        tar.add(fn)
+            else:
+                with tarfile.open(nonbonded_raw, 'r:bz2') as tar:
+                    tar.extractall()
+                    members = tar.getmembers()
+                with tarfile.open(outfile_raw, 'w:bz2') as tar:
+                    for member in members:
+                        filename = member.name
+                        if filename.split('_')[0] not in ('custom', 'default'):  # Backward Compatibility
+                            logger.warning('Updating file names to new version')
+                            os.rename(filename, 'default_' + filename)
+                            filename = 'default_' + filename
+                        tar.add(filename)
+                    for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
+                        tar.add(fn)
 
         # Get time and energy components
         sim_time, component_dict = parse_output(energy_group_file, len(atom_groups), ENERGY_COMPONENTS)
         # calculate mean and error
         results = {}
+        logger.info('Calculating average potential')
         for comp in ENERGY_COMPONENTS:
             pair_dict = component_dict[comp]
             data_dict = {}
@@ -633,15 +663,17 @@ def _process(structure_dict):
             results[comp]['mean_potential'] = []
             results[comp]['error'] = []
             for pair, energy in pair_dict.items():
-                # skip no interactions
-                if np.mean(energy) == 0:
+                mean_potential = np.mean(energy)
+                # skip zero and near 0 potential (The latter sometimes causes overflow issues during error calc.)
+                if np.abs(mean_potential) < 1e-6:
                     continue
                 results[comp]['keys'].append(list(pair))
-                results[comp]['mean_potential'].append(np.mean(energy))
+                results[comp]['mean_potential'].append(mean_potential)
                 data_dict[pair] = energy  # Only store non-zero energies
 
             # Calculate the error separately over multiple processes
             nproc = dynamic_cpu_assignment(NPROC)
+            logger.debug('Calculating error using {} cores'.format(nproc))
             error_dict = _get_error(data_dict, nproc)
             for k in results[comp]['keys']:
                 results[comp]['error'].append(error_dict[tuple(k)])
@@ -655,8 +687,8 @@ def _process(structure_dict):
 
         transformer_dict = {'structure': {
             'parent_structure_id':
-                    structure_dict['structure']['structure_id']
-            },
+                structure_dict['structure']['structure_id']
+        },
             'files': {'desmond_nonbonded': outfile,
                       'desmond_nonbonded_raw': outfile_raw},
             'custom': structure_dict['custom'],
@@ -692,12 +724,12 @@ def parse_args():
     Argument parser when script is run from commandline
     :return:
     """
-    description='''
+    description = '''
     Calculate nonbonded interactions between atom groups\n
-    This transformer returns nonbonded interactions between distinct atom groups.
-    It utilizes desmond vrun to do the calculation.
+    In the background this calls desmond/vrun to recalculate the energies from a set of coordinates.\n
+    Because Schrodinger/desmond only supports gpu jobs, you need access to at least on host with a gpu.\n
     All nonbonded interactions between groups are returned.\n
-    By default the groups comprise all protein and ligand residues, however different group can be specified provided 
+    Default groups comprise all protein and ligand residues, however different group can be specified; Provided 
     that they do not share a subset of atoms.\n
     Results are returned in a complex json dictionary. The keys in the first layer identify the calculations, where 
     the calculation with default parameters is given the key "default" and all subsequent calculations called 
@@ -722,41 +754,46 @@ def parse_args():
                         default=None,
                         help='custom group parameters.\n Example: {mode: "w", asl: {0: "protein",'
                              ' 1: "ligand"}, group_id: {0: "protein", 1: "ligand"}}')
-    parser.add_argument('--cpu',
+    parser.add_argument('--raw',
+                        dest='raw',
                         default=False,
                         action='store_true',
-                        help='Run desmond cpu, this requires the deprecated DESMOND_MAIN license token'
-                        )
+                        help='Safe raw output files, does not require a argumet. Default: false')
     parser.add_argument('-n',
                         '--nproc',
                         type=int,
                         dest='nproc',
-                        default=16,
-                        help='Number of cores to use for calculation.\nDefault: 16')
-    parser.add_argument('-h',
-                        '--host',
-                        type=int,
+                        default=8,
+                        help='Number of cores to use (only used for calculating errors)\nDefault: 8')
+    parser.add_argument('--host',
+                        type=str,
+                        nargs='+',
                         dest='host',
                         default='localhost',
-                        help='Host to run schrodinger/desmond on')
-    parser.add_argument('-u',
-                        '--user',
-                        type=str,
-                        default='pldbuser',
-                        help='Username to submit remote jobs under')
+                        help='Host(s) to run schrodinger/desmond on')
+    parser.add_argument('--debug',
+                        dest='debug',
+                        default=False,
+                        action='store_true',
+                        help='Set lgo level to debug')
 
     return parser.parse_args()
 
 
 def get_logger():
     logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
     # create file handler which logs even debug messages
     fh = logging.FileHandler(os.path.join('./', os.path.split(__file__)[-1][:-3] + '.log'), mode='w')
-    fh.setLevel(logging.INFO)
     # create console handler with a higher log level
     ch = logging.StreamHandler()
-    ch.setLevel(logging.ERROR)
+    if DEBUG:
+        logger.setLevel(logging.DEBUG)
+        fh.setLevel(logging.DEBUG)
+        ch.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+        fh.setLevel(logging.INFO)
+        ch.setLevel(logging.ERROR)
     # create formatter and add it to the handlers
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
@@ -769,20 +806,6 @@ def get_logger():
 
 def main(args):
 
-    global NPROC
-    global CPU
-    global HOST
-    global USER
-
-    CPU = args.cpu
-    NPROC = args.nproc
-    HOST = args.host
-    USER = args.user
-
-    if CPU:
-        logger.warning('Running Desmond_cpu, this requires the DESMOND_MAIN license token')
-    else:
-        logger.info('Running Desmond_gpu')
     prefix = args.prefix
     cmsfile, trjtar, cfgfile = args.infiles
     nonbonded_params = args.params
@@ -807,6 +830,14 @@ def main(args):
 
 if __name__ == '__main__':
     import argparse
+
     args = parse_args()
+
+    NPROC = args.nproc
+    HOSTS = args.host
+    RAW = args.raw
+    DEBUG = args.debug
+
     logger = get_logger()
+
     main(args)
