@@ -3,8 +3,11 @@ from __future__ import print_function, division
 import copy
 import re
 import os
-import json
+import sys
 import time
+import json
+import atexit
+import shutil
 import psutil
 import tarfile
 import multiprocessing
@@ -21,7 +24,6 @@ import scipy as sp
 from scipy.optimize import curve_fit
 
 from schrodinger.utils import sea
-from schrodinger.job import jobcontrol
 
 import schrodinger.application.desmond.packages.topo as topo
 from schrodinger.application.desmond.cms import AtomGroup
@@ -30,12 +32,15 @@ import logging
 logging.root.setLevel(logging.NOTSET)
 logger = logging.getLogger(__name__)
 
+IS_PLDB = True
+PLDB_TMP = '/data/schiffer-pldb/tmp'
+
+SCHRODINGER = '/opt/schrodinger/suite2020-4' # Where to find schrodinger, important on the PLDB
 HOSTS = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
 NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
 MAX_GROUPS = 999
 ENERGY_COMPONENTS = ['nonbonded_elec', 'nonbonded_vdw']
-RAW = True # Whether to save raw output files
-DEBUG = False # Log Debug messages
+DESMOND_TIMEOUT = 14400# Timeout for the desmond job
 
 MONITOR_TIME = 120 # Interval over which to monitor GPU usage in seconds
 GPU_UTIL_THRESHOLD = 10 # Maximum average gpu usage over monitored time
@@ -51,6 +56,9 @@ SSH_CMD = ('ssh -o "ConnectTimeout={ssh_timeout}" {server} '
 NVIDIASMI_CMD = 'nvidia-smi -q -x'
 # Command for running nvidia-smi remotely
 REMOTE_NVIDIASMI_CMD = '{} {}'.format(SSH_CMD, NVIDIASMI_CMD)
+
+RAW = True # Whether to save raw output files
+DEBUG = False # Log Debug messages
 
 
 class VRUN(object):
@@ -151,50 +159,54 @@ class VRUN(object):
             f.write(str(new_cfg))
         return out_cfg
 
-    def _launch_vrun(self, jobname, nproc, host):
+    def _launch_vrun(self, jobname, host):
         """
         Launch a desmond vrun job
         :param jobname: <str> jobname
-        :param nproc: <int> number of cores to use
         :param host: <str> hostname
         :return: job a schrodinger.jobcontrol job
         """
         self.cmsfile = self._write_cms(jobname)
         self.cfgfile = self._write_cfg(jobname)
 
-        cmd = ['desmond',
+        cmd = ['{}/desmond'.format(SCHRODINGER),
                '-JOBNAME', jobname,
                '-in', str(self.cmsfile),
                '-c', self.cfgfile,
                '-PROCS', '1',
-               '-gpu']
+               '-gpu',
+               '-WAIT']
 
         logger.info('Running desomd/vrun')
         cmd.append('-HOST')
         cmd.append(host)
 
-        logger.info('$SCHRODINGER/' + ' '.join(cmd))
-        job = jobcontrol.launch_job(cmd)
+        logger.info(' '.join(cmd))
+        p = run_cmd(' '.join(cmd), timeout=DESMOND_TIMEOUT)
 
-        return job
+        # Check if outputfile was created
+        outfile = '{}.engrp'.format(jobname)
 
-    def calculate_energy(self, jobname, nproc=1, host=None):
+        if not os.path.isfile(outfile):
+            logger.error('Could not find output energy file')
+            stdout = ''.join(list(map(bytes2str, p.stdout.readlines())))
+            stderr = ''.join(list(map(bytes2str, p.stderr.readlines())))
+            logger.error('Desmond returned:\nStdout: {}\nStderr: {}'.format(stdout, stderr))
+        else:
+            logger.info('Desmond energy file: '+outfile)
+
+        return outfile
+
+    def calculate_energy(self, jobname, host=None):
         """
         Calculate energy components of a desmond MD Simulation usung Desmond vrun
         :param jobname:<str> The name of the desmond job
-        :param nproc:<int> Number of processors to use
         :param host:<str> The name of the host machine
         :return:
         """
         if host is None:
             host = 'localhost'
-        job = self._launch_vrun(jobname, nproc=nproc, host=host)
-        # wait for job to finish
-        job.wait()
-        if job.succeeded():
-            return True, job.getOutputFiles()
-        else:
-            return False, job.getOutputFiles()
+        return self._launch_vrun(jobname, host=host)
 
 
 class MonitorGpuUsage(object):
@@ -298,14 +310,15 @@ def run_cmd(cmd, timeout=10):
     if exit_code:
         raise RuntimeError('Exit Code: {}'.format(exit_code))
     else:
-        return ''.join(list(map(bytes2str, p.stdout.readlines())))
+        return p
 
 
 def run_nvidiasmi_remote(server, ssh_timeout, cmd_timeout):
     cmd = REMOTE_NVIDIASMI_CMD.format(server=server,
                                       ssh_timeout=ssh_timeout,
                                       cmd_timeout=cmd_timeout)
-    res = run_cmd(cmd)
+    p = run_cmd(cmd)
+    res = ''.join(list(map(bytes2str, p.stdout.readlines())))
     return ET.fromstring(res) if res is not None else None
 
 
@@ -504,6 +517,87 @@ def _get_solute_by_res(cms_model):
             resids.append((res.resnum, res.chain.strip()))
     return atom_groups, resids
 
+def assign_atomgroups(structure_dict, cms_model, fork):
+    """
+
+    """
+
+    # Custom calculation parameters
+    if 'nonbonded_params' in structure_dict['files'] or 'nonbonded_params' in structure_dict:
+
+        logger.info('Found custom set of parameters')
+
+        # Get nonbonded params; On the PLDB nonbonded params are provided as a json file
+        params = structure_dict['files'].get('nonbonded_params')
+        if params is not None:
+            with open(structure_dict['files']['nonbonded_params'], 'r') as fh:
+                nonbonded_params = json.load(fh)
+        else:
+            nonbonded_params = structure_dict['nonbonded_params']
+
+        # Get mode: write or append, this is relevant only on the PLDB
+        mode = nonbonded_params.get('mode')
+        # Get prefious results if exist
+        nonbonded_json = structure_dict['files'].get('desmond_nonbonded')
+
+        # On the pldb we want to calculate the default vdw interactions unless specified otherwise
+        # Consequently if mode is append, but the default calculation has not been run we need ot for another pipeline
+        if nonbonded_json is None and mode == 'a':
+            _id = 'default'
+            atom_groups, group_ids = _get_solute_by_res(cms_model)
+            nonbonded_dict = {_id: {'group_ids': group_ids}}
+            if fork is None:
+                structure_dict['custom']['pipeline'] = ['trj_nonbonded_pipeline', ]
+                fork = ['trj_nonbonded_pipeline', ]
+            else:  # Update analysis pipeline
+                structure_dict['custom']['pipeline'] = fork + structure_dict['custom']['pipeline']
+                fork = ['trj_nonbonded_pipeline', ]
+        else:
+            # Overwrite existing file
+            if mode is None or mode == 'w':
+                nonbonded_dict = {}
+                if structure_dict['files'].get('desmond_nonbonded') is not None:
+                    logger.warning('Overwriting nonbonded calculation')
+            # Append to existing file
+            elif mode == 'a':
+                with open(nonbonded_json, 'r') as fh:
+                    nonbonded_dict = json.load(fh)
+                # Older versions did not support multiple nonbonded transformer runs
+                # This will retroactively update older structures on the PLDB
+                if 'default' not in nonbonded_dict:
+                    logger.warning('Updating old nonbonded results to new version')
+                    nonbonded_dict = {'default': nonbonded_dict, }
+            # Create ID
+            for i in range(999):
+                _id = 'custom_{}'.format(i)
+                if _id not in nonbonded_dict:
+                    break
+            # Create atom groups
+            atom_groups = []
+            for asl in nonbonded_params['asl']:
+                atom_groups.append(list(map(int, topo.asl2gids(cms_model, asl))))  # asl2gids: returns np.int
+            # Check if custom group ids are provided
+            if 'group_ids' in nonbonded_params:
+                group_ids = nonbonded_params['group_ids']
+            else:
+                group_ids = nonbonded_params['asl']
+            nonbonded_dict[_id] = {'group_ids': group_ids}
+    else:  # Default (Ligand + Protein) calculation
+        _id = 'default'
+        atom_groups, group_ids = _get_solute_by_res(cms_model)
+        nonbonded_dict = {_id: {'group_ids': group_ids}}
+
+    logger.info('number of groups: {}'.format(len(atom_groups)))
+
+    return _id, atom_groups, nonbonded_dict, structure_dict, fork
+
+
+def clean_pldb_tmp(cwd, tmp):
+    logger.info('Cleaning up tempdir')
+    for f in os.listdir(tmp):
+        shutil.move(os.path.join(tmp, f), os.path.join(cwd, f))
+    os.chdir(cwd)
+    os.rmdir(tmp)
 
 def _process(structure_dict):
     """
@@ -511,6 +605,15 @@ def _process(structure_dict):
     :param structure_dict:
     :return:
     """
+
+    if IS_PLDB:
+        cwd  = os.getcwd()
+        tmp_dir = os.path.join(PLDB_TMP, 'tmp{}'.format(np.random.randint(10000)))
+        while os.path.isdir(tmp_dir): # Unlikely but possible
+            tmp_dir = os.path.join(PLDB_TMP, 'tmp{}'.format(np.random.randint(10000)))
+        os.mkdir(tmp_dir)
+        os.chdir(tmp_dir)
+        atexit.register(clean_pldb_tmp, cwd, tmp_dir)
 
     fork = None
     # Check if transformers is called as part of a pipeline
@@ -551,166 +654,87 @@ def _process(structure_dict):
 
     logger.info('creating atomgroups')
 
-    if 'nonbonded_params' in structure_dict['files']:  # Custom calculation parameters
-        logger.info('Found custom set of parameters')
+    _id, atom_groups, nonbonded_dict, structure_dict, fork = assign_atomgroups(structure_dict, cms_model, fork)
 
-        nonbonded_json = structure_dict['files'].get('desmond_nonbonded')
-        with open(structure_dict['files']['nonbonded_params'], 'r') as fh:
-            nonbonded_params = json.load(fh)
-
-        mode = nonbonded_params.get('mode')
-
-        # If append and no default, calculate default nonbonded interactions first
-        if nonbonded_json is None and mode == 'a':
-            nonbonded_dict = {}
-            _id = 'default'
-            atom_groups, group_ids = _get_solute_by_res(cms_model)
-            if fork is None:
-                fork = ['trj_nonbonded_pipeline', ]
-            else:  # Update analysis pipeline
-                if 'pipeline' in structure_dict['custom']:
-                    structure_dict['custom']['pipeline'] = fork + structure_dict['custom']['pipeline']
-                    fork = ['trj_nonbonded_pipeline', ]
-                else:
-                    structure_dict['custom']['pipeline'] = fork
-                    fork = ['trj_nonbonded_pipeline', ]
-        else:
-            # Overwrite
-            if mode is None or mode == 'w':
-                nonbonded_dict = {}
-                if structure_dict['files'].get('desmond_nonbonded') is not None:
-                    logger.warning('Overwriting nonbonded calculation')
-            # Append
-            elif mode == 'a':
-                with open(nonbonded_json, 'r') as fh:
-                    nonbonded_dict = json.load(fh)
-                if 'default' not in nonbonded_dict:  # Backward compatibility
-                    logger.warning('Updating old nonbonded results to new version')
-                    nonbonded_dict = {'default': nonbonded_dict, }
-            # Create ID
-            for i in range(999):
-                _id = 'custom_{}'.format(i)
-                if _id not in nonbonded_dict:
-                    break
-            # Create atom groups
-            atom_groups = []
-            for asl in nonbonded_params['asl']:
-                atom_groups.append(list(map(int, topo.asl2gids(cms_model, asl))))  # asl2gids: returns np.int
-            # Check if custom group ids are provided
-            if 'group_ids' in nonbonded_params:
-                group_ids = nonbonded_params['group_ids']
-            else:
-                group_ids = nonbonded_params['asl']
-    else:  # Default (Ligand + Protein) calculation
-        nonbonded_dict = {}
-        _id = 'default'
-        atom_groups, group_ids = _get_solute_by_res(cms_model)
-
-    logger.info('number of groups: {}'.format(len(atom_groups)))
     logger.info('Finding free host')
     logger.debug('Hosts: '+', '.join(HOSTS))
     host = get_gpu_host(HOSTS)
 
     logger.info('Running desmond job on: {}'.format(host))
     vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups)
-    vrun_out = vrun_obj.calculate_energy(outname, nproc=1, host=host)
+    energy_group_file = vrun_obj.calculate_energy(outname, host=host)
 
-    # if vrun successful create output files
-    if vrun_out[0]:
-        energy_group_file = ''
-        # Get energygroup file
-        for f in vrun_out[1]:
-            if f[-6:] == '.engrp':
-                energy_group_file = '{}_{}'.format(_id, f)
-                os.rename(f, energy_group_file)
-        if not energy_group_file:
-            raise RuntimeError('No energy group file returned by desmond vrun')
+    if RAW:
+        # Write raw output
+        with open('{}_atom_groups.json'.format(_id), 'w') as f:
+            json.dump(atom_groups, f)
+        nonbonded_raw = structure_dict['files'].get('desmond_nonbonded_raw')
+        if nonbonded_raw is None:
+            with tarfile.open(outfile_raw, 'w:bz2') as tar:
+                for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
+                    tar.add(fn)
+        else:
+            with tarfile.open(nonbonded_raw, 'r:bz2') as tar:
+                tar.extractall()
+                members = tar.getmembers()
+            with tarfile.open(outfile_raw, 'w:bz2') as tar:
+                for member in members:
+                    filename = member.name
+                    if filename.split('_')[0] not in ('custom', 'default'):  # Backward Compatibility
+                        logger.warning('Updating file names to new version')
+                        os.rename(filename, 'default_' + filename)
+                        filename = 'default_' + filename
+                    tar.add(filename)
+                for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
+                    tar.add(fn)
 
-        if RAW:
-            # Write raw output
-            with open('{}_atom_groups.json'.format(_id), 'w') as f:
-                json.dump(atom_groups, f)
-            nonbonded_raw = structure_dict['files'].get('desmond_nonbonded_raw')
-            if nonbonded_raw is None:
-                with tarfile.open(outfile_raw, 'w:bz2') as tar:
-                    for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
-                        tar.add(fn)
-            else:
-                with tarfile.open(nonbonded_raw, 'r:bz2') as tar:
-                    tar.extractall()
-                    members = tar.getmembers()
-                with tarfile.open(outfile_raw, 'w:bz2') as tar:
-                    for member in members:
-                        filename = member.name
-                        if filename.split('_')[0] not in ('custom', 'default'):  # Backward Compatibility
-                            logger.warning('Updating file names to new version')
-                            os.rename(filename, 'default_' + filename)
-                            filename = 'default_' + filename
-                        tar.add(filename)
-                    for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
-                        tar.add(fn)
+    # Get time and energy components
+    sim_time, component_dict = parse_output(energy_group_file, len(atom_groups), ENERGY_COMPONENTS)
+    # calculate mean and error
+    results = {}
+    logger.info('Calculating average potential')
+    for comp in ENERGY_COMPONENTS:
+        pair_dict = component_dict[comp]
+        data_dict = {}
+        results[comp] = {}
+        results[comp]['keys'] = []
+        results[comp]['mean_potential'] = []
+        results[comp]['error'] = []
+        for pair, energy in pair_dict.items():
+            mean_potential = np.mean(energy)
+            # skip zero and near 0 potential (The latter sometimes causes overflow issues during error calc.)
+            if np.abs(mean_potential) < 1e-6:
+                continue
+            results[comp]['keys'].append(list(pair))
+            results[comp]['mean_potential'].append(mean_potential)
+            data_dict[pair] = energy  # Only store non-zero energies
+        # Calculate the error separately over multiple processes
+        nproc = dynamic_cpu_assignment(NPROC)
+        logger.debug('Calculating error for {}'.format(comp))
+        error_dict = _get_error(data_dict, nproc)
+        for k in results[comp]['keys']:
+            results[comp]['error'].append(error_dict[tuple(k)])
 
-        # Get time and energy components
-        sim_time, component_dict = parse_output(energy_group_file, len(atom_groups), ENERGY_COMPONENTS)
-        # calculate mean and error
-        results = {}
-        logger.info('Calculating average potential')
-        for comp in ENERGY_COMPONENTS:
-            pair_dict = component_dict[comp]
-            data_dict = {}
-            results[comp] = {}
-            results[comp]['keys'] = []
-            results[comp]['mean_potential'] = []
-            results[comp]['error'] = []
-            for pair, energy in pair_dict.items():
-                mean_potential = np.mean(energy)
-                # skip zero and near 0 potential (The latter sometimes causes overflow issues during error calc.)
-                if np.abs(mean_potential) < 1e-6:
-                    continue
-                results[comp]['keys'].append(list(pair))
-                results[comp]['mean_potential'].append(mean_potential)
-                data_dict[pair] = energy  # Only store non-zero energies
+    nonbonded_dict[_id]['energy_components'] = ENERGY_COMPONENTS
+    nonbonded_dict[_id]['time'] = sim_time
+    nonbonded_dict[_id]['results'] = results
 
-            # Calculate the error separately over multiple processes
-            nproc = dynamic_cpu_assignment(NPROC)
-            logger.debug('Calculating error using {} cores'.format(nproc))
-            error_dict = _get_error(data_dict, nproc)
-            for k in results[comp]['keys']:
-                results[comp]['error'].append(error_dict[tuple(k)])
+    with open(outfile, 'w') as f:
+        json.dump(nonbonded_dict, f)
 
-        with open(outfile, 'w') as f:
-            nonbonded_dict[_id] = {'energy_components': ENERGY_COMPONENTS,
-                                   'group_ids': group_ids,
-                                   'time': sim_time,
-                                   'results': results}
-            json.dump(nonbonded_dict, f)
+    transformer_dict = {'structure': {
+        'parent_structure_id':
+            structure_dict['structure']['structure_id']
+    },
+        'files': {'desmond_nonbonded': outfile,
+                  'desmond_nonbonded_raw': outfile_raw},
+        'custom': structure_dict['custom'],
+    }
+    if fork is not None:
+        logger.info('Forking pipeline: ' + ' '.join(fork))
+        transformer_dict['control'] = {'forks': fork}
+    yield transformer_dict
 
-        transformer_dict = {'structure': {
-            'parent_structure_id':
-                structure_dict['structure']['structure_id']
-        },
-            'files': {'desmond_nonbonded': outfile,
-                      'desmond_nonbonded_raw': outfile_raw},
-            'custom': structure_dict['custom'],
-        }
-        if fork is not None:
-            logger.info('Forking pipeline: ' + ' '.join(fork))
-            transformer_dict['control'] = {'forks': fork}
-        yield transformer_dict
-
-    else:
-        logger.error('vrun failed')  # TODO Ellaborate
-        if fork is not None:
-            logger.info('Forking pipeline: ' + ' '.join(fork))
-            yield {
-                'structure': {
-                    'structure_id':
-                        structure_dict['structure']['structure_id']
-                },
-                'control': {'flags': {'description': 'VRUN_FAILED', 'messages': 'TODO'},
-                            'forks': fork},
-                'custom': structure_dict['custom'],
-            }
 
 
 def run(structure_dict_list):
@@ -752,8 +776,8 @@ def parse_args():
                         type=str,
                         dest='params',
                         default=None,
-                        help='custom group parameters.\n Example: {mode: "w", asl: {0: "protein",'
-                             ' 1: "ligand"}, group_id: {0: "protein", 1: "ligand"}}')
+                        help='custom group parameters.\n Example: {"mode": "w", "asl": ["protein", "ligand"],'
+                             ' "group_id": ["protein", "ligand"]}')
     parser.add_argument('--raw',
                         dest='raw',
                         default=False,
@@ -808,7 +832,6 @@ def main(args):
 
     prefix = args.prefix
     cmsfile, trjtar, cfgfile = args.infiles
-    nonbonded_params = args.params
 
     structure_dict_list = [
         {'files': {
@@ -821,8 +844,11 @@ def main(args):
             'custom': {}
         }
     ]
-    if nonbonded_params is not None:
+
+    if args.params is not None:
+        nonbonded_params = json.loads(args.params)
         structure_dict_list[0]['nonbonded_params'] = nonbonded_params
+
     for sd in run(structure_dict_list):
         with open('{}_trj_nonbonded_transformer.json'.format(prefix), 'w') as outfile:
             json.dump(sd, outfile)
@@ -833,11 +859,15 @@ if __name__ == '__main__':
 
     args = parse_args()
 
+    IS_PLDB = False
+    SCHRODINGER = os.environ['SCHRODINGER']
     NPROC = args.nproc
     HOSTS = args.host
     RAW = args.raw
     DEBUG = args.debug
 
     logger = get_logger()
+    logger.info(' '.join(sys.argv))
+    logger.debug('$SCHRODINGER = {}'.format(SCHRODINGER))
 
     main(args)
