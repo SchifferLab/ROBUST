@@ -25,92 +25,9 @@ NPROC = 16
 STEP = 2  # Process every nth frame
 LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
+QUEUE_TIMEOUT = 1200 # 20 minute timeout for processign a new frame
 
-
-class BlockAverage(multiprocessing.Process):
-    """
-    Give any 1d timeseries this class calculates the block averaged standard error
-    See:
-        Flyvbjerg, Henrik, and Henrik Gordon Petersen.
-        "Error estimates on averages of correlated data."
-        The Journal of Chemical Physics 91.1 (1989): 461-466.
-
-        Grossfield, Alan, and Daniel M. Zuckerman.
-        "Quantifying uncertainty and sampling quality in biomolecular simulations."
-         Annual reports in computational chemistry 5 (2009): 23-48.
-    """
-
-    def __init__(self, in_queue, out_queue, min_blocks=5):
-        """
-
-        :param in_queue:
-        :param out_queue:
-        :param min_blocks:
-        """
-
-        multiprocessing.Process.__init__(self)
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-
-        self.min_blocks = min_blocks
-
-    def transform(self, data_array, block_length):
-        """
-
-        :param data_array:
-        :param block_length:
-        :return:
-        """
-
-        # If the array (a) is not a multiple of l drop the first x values so that it becomes one
-        if len(data_array) % block_length != 0:
-            data_array = data_array[int(len(data_array) % block_length):]
-
-        nblocks = len(data_array) // int(block_length)
-
-        block_averages = np.zeros(nblocks)
-        for i in range(nblocks):
-            block_averages[i] = np.mean(data_array[block_length * i:block_length + block_length * i])
-
-        return np.array(block_averages)
-
-    def run(self):
-
-        while True:
-            data = self.in_queue.get()
-            # poison pill
-            if data == 'STOP':
-                break
-            i, data_array = data
-            # blocksize 1 => full run
-            block_length = 2
-            blocks = np.array([1, ])
-            block_stderr = [np.std(data_array) / np.sqrt(len(data_array))]
-            # Transform the series until nblocks = 2
-            while len(data_array) // block_length >= self.min_blocks:
-                b = self.transform(data_array, block_length)
-                block_stderr.append(np.std(b) / np.sqrt(len(b)))
-                block_length += 1
-                if len(data_array) // block_length < self.min_blocks:
-                    blocks = np.arange(block_length - 1) + 1
-
-            # Simple exponential function
-            def model_func(x, p0, p1):
-                return p0 * (1 - np.exp(-p1 * x))
-
-            # Fit curve
-            opt_parms, parm_cov = sp.optimize.curve_fit(model_func, blocks, block_stderr, maxfev=2000)
-            error_estimate = opt_parms[0]
-            while True:
-                if self.out_queue.full():
-                    time.sleep(5)
-                else:
-                    self.out_queue.put([i, error_estimate])
-                    break
-        return
-
-
-class HydrongeBondAnalysis(multiprocessing.Process):
+class HydrogenBondAnalysis(multiprocessing.Process):
     """
     Python class for  calculating hydrogen bonds
     The main function assign_hbonds assigns hydrogen bonds according to a geometric criterion.
@@ -389,6 +306,104 @@ def dynamic_cpu_assignment(n_cpus):
         return nproc
 
 
+def block_averages(x, l):
+    """
+    Given a vector x return a vector x' of the block averages .
+    """
+
+    if l == 1:
+        return x
+
+    # If the array x is not a multiple of l drop the first x values so that it becomes one
+    if len(x) % l != 0:
+        x = x[int(len(x) % l):]
+
+    xp = []
+    for i in range(len(x) // int(l)):
+        xp.append(np.mean(x[l * i:l + l * i]))
+
+    return np.array(xp)
+
+
+def ste(x):
+    return np.std(x) / np.sqrt(len(x))
+
+
+def get_bse(x, min_blocks=3, maxfev=4000):
+    steps = np.max((1, len(x) // 100))
+    stop = len(x) // min_blocks + steps
+
+    bse = []
+    for l in range(1, stop, steps):
+        xp = block_averages(x, l)
+        bse.append(ste(xp))
+
+    # Fit simple exponential to determine plateau
+    def model_func(x, p0, p1):
+        return p0 * (1 - np.exp(-p1 * x))
+    try:
+        opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
+                                                    (np.mean(bse), 0.1), maxfev=maxfev)
+        return opt_parms[0]
+    except Exception as e:
+        logger.warning('Could not fit function to data within maxfev: {}'.format(maxfev))
+        logger.warning(e)
+        logger.warning('Setting standard error to maximum observed')
+        return np.max(bse)
+
+
+def get_error(data, nproc):
+    pool = multiprocessing.Pool(processes=nproc)
+    err = pool.map(get_bse, data.values())
+    return dict(list(zip(data.keys(), err)))
+
+
+def block_averages(x, l):
+    """
+    Given a vector x return a vector x' of the block averages .
+    """
+
+    if l == 1:
+        return x
+
+    # If the array x is not a multiple of l drop the first x values so that it becomes one
+    if len(x) % l != 0:
+        x = x[int(len(x) % l):]
+
+    xp = []
+    for i in range(len(x) // int(l)):
+        xp.append(np.mean(x[l * i:l + l * i]))
+
+    return np.array(xp)
+
+
+def ste(x):
+    return np.std(x) / np.sqrt(len(x))
+
+
+def get_bse(x, min_blocks=3, maxfev=4000):
+    steps = np.max((1, len(x) // 100))
+    stop = len(x) // min_blocks + steps
+
+    bse = []
+    for l in range(1, stop, steps):
+        xp = block_averages(x, l)
+        bse.append(ste(xp))
+
+    # Fit simple exponential to determine plateau
+    def model_func(x, p0, p1):
+        return p0 * (1 - np.exp(-p1 * x))
+    try:
+        opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
+                                                    (np.mean(bse), 0.1), maxfev=maxfev)
+        return opt_parms[0]
+    except Exception as e:
+        logger.warning('Could not fit function to data within maxfev: {}'.format(maxfev))
+        logger.warning(e)
+        logger.warning('Setting standard error to maximum observed')
+        return np.max(bse)
+
+
 def get_error(data, nproc):
     """
     DocString
@@ -396,28 +411,11 @@ def get_error(data, nproc):
     :param nproc:
     :return:
     """
-    stddev = np.zeros(data.shape[0])
 
-    in_queue = multiprocessing.Queue()
-    out_queue = multiprocessing.Queue()
-    workers = [BlockAverage(in_queue, out_queue, min_blocks=20) for _ in range(nproc)]
-    for w in workers:
-        w.start()
+    pool = multiprocessing.Pool(processes=nproc)
+    err = pool.map(get_bse, data)
 
-    for i, row in enumerate(data):
-        in_queue.put([i, row])
-
-    for i in range(data.shape[0]):
-        _id, error = out_queue.get()
-        stddev[_id] = error
-
-    for _ in range(nproc):
-        in_queue.put('STOP')
-
-    for w in workers:
-        w.join()
-
-    return stddev
+    return err
 
 
 def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff=0.1, is_water_mediated=False):
@@ -542,12 +540,17 @@ def _process(structure_dict):
     workers = []
     queue = multiprocessing.Queue()
     for i, frames in enumerate(frame_list):
-        workers.append(HydrongeBondAnalysis(i, queue, cms_file, trj_dir, frames=frames, ndx=ligand_ndx))
+        workers.append(HydrogenBondAnalysis(i, queue, cms_file, trj_dir, frames=frames, ndx=ligand_ndx))
         workers[i].start()
 
     # get results
     for i in range(nproc):
-        _id, frame_results, water_frame_results = queue.get()
+        try:
+            _id, frame_results, water_frame_results = queue.get(timeout=QUEUE_TIMEOUT)
+        except Exception as e:
+            logger.error('No new data recieved after {} seconds'.format(QUEUE_TIMEOUT))
+            raise TimeoutError('Timeout Error occured: {}'.format(e))
+        queue.task_done()
         for k in frame_results.keys():
             if k not in combined_results:
                 combined_results[k] = np.zeros(total_frames)

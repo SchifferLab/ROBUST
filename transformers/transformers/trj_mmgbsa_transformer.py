@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NPROC = 8  # Split into at most X subjobs
+NPROC = 10  # Split into at most X subjobs
 NFRAMES = 100  # Number of frames use for mmgbsa calculation
 LIGAND_ASL = None  # Set to overwrite automatic ligand detection
 

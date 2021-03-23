@@ -182,7 +182,8 @@ class RMS(multiprocessing.Process):
                                                 'mobile_calc': np.zeros((self.total_frames, len(mobile_calc_ndx), 3)),
                                                 'type': calculation_type})
 
-    def rmsd(self, reference, mobile):
+    @staticmethod
+    def rmsd(reference, mobile):
         """
         Calculate root mean squared deviation
         :param reference: <numpy.ndarray> of reference atoms, shape: (natoms,3)
@@ -194,7 +195,8 @@ class RMS(multiprocessing.Process):
             rmsd_out.append(np.sqrt(np.mean((reference - mobile_frame) ** 2)))
         return rmsd_out
 
-    def rmsf(self, reference, mobile):
+    @staticmethod
+    def rmsf(reference, mobile):
         """
         calculate root mean squared fluctuation
         :param reference: <numpy.ndarray> of reference atoms, shape: (natoms,3)

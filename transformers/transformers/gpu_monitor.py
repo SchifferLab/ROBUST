@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import json
+import shutil
 import psutil
 import tarfile
 import multiprocessing
@@ -27,23 +28,23 @@ import schrodinger.application.desmond.packages.topo as topo
 from schrodinger.application.desmond.cms import AtomGroup
 
 import logging
-
 logging.root.setLevel(logging.NOTSET)
 logger = logging.getLogger(__name__)
 
-SCHRODINGER = '/opt/schrodinger/suite2020-4'  # Where to find schrodinger, important on the PLDB
-HOSTS = ['vif', 'tesla']  # What host to run /schrodinger/desmond on. Must be specified in host file.
-NPROC = 16  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
+
+SCHRODINGER = '/opt/schrodinger/suite2020-4' # Where to find schrodinger, important on the PLDB
+HOSTS = ['vif', 'tesla'] # What host to run /schrodinger/desmond on. Must be specified in host file.
+NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
 MAX_GROUPS = 999
 ENERGY_COMPONENTS = ['nonbonded_elec', 'nonbonded_vdw']
-DESMOND_TIMEOUT = 14400  # Timeout for the desmond job
+DESMOND_TIMEOUT = 14400# Timeout for the desmond job
 
-MONITOR_TIME = 120  # Interval over which to monitor GPU usage in seconds
-GPU_UTIL_THRESHOLD = 10  # Maximum average gpu usage over monitored time
-MEM_UTIL_THRESHOLD = 10  # Maximum average gpu memory usage over monitored time
-TIMEOUT = 7200  # Timeout for host search, transformer exits if it can't find a host within time
-SSH_TIMEOUT = 5  # Timeout for ssh
-CMD_TIMEOUT = 5  # Timeout for remote nvidia-smi call
+MONITOR_TIME = 120 # Interval over which to monitor GPU usage in seconds
+GPU_UTIL_THRESHOLD = 10 # Maximum average gpu usage over monitored time
+MEM_UTIL_THRESHOLD = 10 # Maximum average gpu memory usage over monitored time
+TIMEOUT = 7200 # Timeout for host search, transformer exits if it can't find a host within time
+SSH_TIMEOUT = 5 # Timeout for ssh
+CMD_TIMEOUT = 5 # Timeout for remote nvidia-smi call
 
 # execute command remotely using SSH
 SSH_CMD = ('ssh -o "ConnectTimeout={ssh_timeout}" {server} '
@@ -53,8 +54,8 @@ NVIDIASMI_CMD = 'nvidia-smi -q -x'
 # Command for running nvidia-smi remotely
 REMOTE_NVIDIASMI_CMD = '{} {}'.format(SSH_CMD, NVIDIASMI_CMD)
 
-RAW = True  # Whether to save raw output files
-DEBUG = False  # Log Debug messages
+RAW = True # Whether to save raw output files
+DEBUG = False # Log Debug messages
 
 
 class VRUN(object):
@@ -191,7 +192,7 @@ class VRUN(object):
             stderr = ''.join(list(map(bytes2str, p.stderr.readlines())))
             logger.error('Desmond returned:\nStdout: {}\nStderr: {}'.format(stdout, stderr))
         else:
-            logger.info('Desmond energy file: ' + outfile)
+            logger.info('Desmond energy file: '+outfile)
 
         return outfile
 
@@ -213,13 +214,12 @@ class MonitorGpuUsage(object):
     This class is inspired by:
     https://stackoverflow.com/questions/3393612/run-certain-code-every-n-seconds
     """
-
     def __init__(self, server, interval, ssh_timeout, cmd_timeout):
         self.server = server
         self.interval = interval
         self.ssh_timeout = ssh_timeout
         self.cmd_timeout = cmd_timeout
-        self._timer = None
+        self._timer     = None
         self.is_running = False
         self.start()
         self.gpu_util = []
@@ -338,10 +338,11 @@ def get_gpu_util(nvidiasmi, gpuid=0):
 
 
 def get_average_gpu_util(server, interval=5):
+
     monitor = MonitorGpuUsage(server, interval, SSH_TIMEOUT, CMD_TIMEOUT)
     monitor.start()
     t = time.time()
-    while time.time() - t < MONITOR_TIME:
+    while time.time()-t < MONITOR_TIME:
         time.sleep(1)
     monitor.stop()
     avg_gpu_util = np.mean(monitor.gpu_util)
@@ -351,7 +352,7 @@ def get_average_gpu_util(server, interval=5):
 
 def get_gpu_host(hosts):
     t = time.time()
-    while time.time() - t < TIMEOUT:
+    while time.time()-t < TIMEOUT:
         for host in hosts:
             gpu_util, mem_util = get_average_gpu_util(host)
             logger.debug('{} average gpu util: {}%'.format(host, gpu_util))
@@ -381,12 +382,13 @@ def block_averages(x, l):
 
 
 def ste(x):
-    return np.std(x) / np.sqrt(len(x))
+    return np.std(x)/np.sqrt(len(x))
 
 
-def get_bse(x, min_blocks=3, maxfev=4000):
-    steps = np.max((1, len(x) // 100))
-    stop = len(x) // min_blocks + steps
+def get_bse(x, min_blocks=3):
+
+    steps = np.max((1,len(x)//100))
+    stop = len(x)//min_blocks+steps
 
     bse = []
     for l in range(1, stop, steps):
@@ -396,18 +398,14 @@ def get_bse(x, min_blocks=3, maxfev=4000):
     # Fit simple exponential to determine plateau
     def model_func(x, p0, p1):
         return p0 * (1 - np.exp(-p1 * x))
-    try:
-        opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
-                                                    (np.mean(bse), 0.1), maxfev=maxfev)
-        return opt_parms[0]
-    except Exception as e:
-        logger.warning('Could not fit function to data within maxfev: {}'.format(maxfev))
-        logger.warning(e)
-        logger.warning('Setting standard error to maximum observed')
-        return np.max(bse)
+
+    opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
+                                                (np.mean(bse), 0.1), maxfev=2000)
+
+    return opt_parms[0]
 
 
-def get_error(data, nproc):
+def _get_error(data, nproc):
     pool = multiprocessing.Pool(processes=nproc)
     err = pool.map(get_bse, data.values())
     return dict(list(zip(data.keys(), err)))
@@ -648,7 +646,7 @@ def _process(structure_dict):
     _id, atom_groups, nonbonded_dict, structure_dict, fork = assign_atomgroups(structure_dict, cms_model, fork)
 
     logger.info('Finding free host')
-    logger.debug('Hosts: ' + ', '.join(HOSTS))
+    logger.debug('Hosts: '+', '.join(HOSTS))
     host = get_gpu_host(HOSTS)
 
     logger.info('Running desmond job on: {}'.format(host))
@@ -702,7 +700,7 @@ def _process(structure_dict):
         # Calculate the error separately over multiple processes
         nproc = dynamic_cpu_assignment(NPROC)
         logger.debug('Calculating error for {}'.format(comp))
-        error_dict = get_error(data_dict, nproc)
+        error_dict = _get_error(data_dict, nproc)
         for k in results[comp]['keys']:
             results[comp]['error'].append(error_dict[tuple(k)])
 
@@ -725,6 +723,7 @@ def _process(structure_dict):
         logger.info('Forking pipeline: ' + ' '.join(fork))
         transformer_dict['control'] = {'forks': fork}
     yield transformer_dict
+
 
 
 def run(structure_dict_list):
@@ -819,6 +818,7 @@ def get_logger():
 
 
 def main(args):
+
     prefix = args.prefix
     cmsfile, trjtar, cfgfile = args.infiles
 
