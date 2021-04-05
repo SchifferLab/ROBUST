@@ -16,7 +16,7 @@ except ImportWarning as w:
 from schrodinger.application.desmond.packages import topo
 
 
-def pldb_client(endpoint, username, password):
+def pldb_client(endpoint, username, password, logger):
     if password is None:
         password = getpass.getpass()
     api = Api(endpoint, username, password)

@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument('--endpoint',
                         type=str,
                         dest='endpoint',
-                        default=None,
+                        default='http://rhapsody.umassmed.edu',
                         help='PLDB URL')
     parser.add_argument('--username',
                         type=str,
@@ -581,7 +581,7 @@ def main(args):
         if password is None:
             password = getpass.getpass()
         logger.info('Connecting to PLDB endpoint: {}'.format(endpoint))
-        api = pldb_client(endpoint, username, password)
+        api = pldb_client(endpoint, username, password, logger)
 
     df, ligand_structures = merger(data, dataset, api)
 
