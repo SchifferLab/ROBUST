@@ -1,11 +1,14 @@
 import os
 import sys
 import time
+import json
 import tarfile
 import getpass
 import logging
 import warnings
 import argparse
+
+import pandas as pd
 
 
 from scipy.stats import entropy
@@ -54,6 +57,13 @@ def parse_args():
                              'The data_type can be specified by passing a dictionary with {<descriptor>: <datatype>}.'
                              'Currently data_types are only relevant if descriptors were calculated on the PLDB',
                         type=json.loads),
+    parser.add_argument('--no_ligand',
+                        dest='no_ligand',
+                        default=False,
+                        action='store_true',
+                        help='Do not identify and rename the ligand, this is useful in systems without ligand,'
+                             ' if you do not want to rename your ligand residues. Currently only works for nonbonded'
+                             ' data')
     parser.add_argument('--endpoint',
                         type=str,
                         dest='endpoint',
@@ -92,7 +102,7 @@ def get_logger(prefix):
 
 
 
-def preprocess_rms(api, dataset, data_type=None):
+def preprocess_rms(api, dataset, data_type=None, no_ligand=False):
     """
 
     :param api:
@@ -100,6 +110,7 @@ def preprocess_rms(api, dataset, data_type=None):
     :param dataset:
     :type dataset: pandas.Dataframe
     :param data_type: Placeholder
+    :param no_lignad: Placeholder
     :return:
     """
 
@@ -141,7 +152,7 @@ def preprocess_rms(api, dataset, data_type=None):
     return df_rms
 
 
-def preprocess_vdw(api, dataset, data_type='default'):
+def preprocess_vdw(api, dataset, data_type='default', no_ligand=False):
     """
     Get pairwise vdw interactions
     :param api:
@@ -181,8 +192,9 @@ def preprocess_vdw(api, dataset, data_type='default'):
                 raise ValueError('{} data type not claculated for {}'.format(data_type, stid))
         else:
             nonbonded_dict = nonbonded_dict[data_type]
-
-        if 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
+        if no_ligand:
+            ligand_resid = None
+        elif 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
             ligands = find_ligands(st=cms_model)
             assert (len(ligands) == 1)
             ligand_resid = None
@@ -226,12 +238,13 @@ def preprocess_vdw(api, dataset, data_type='default'):
     return df_vdw
 
 
-def preprocess_elec(api, dataset, data_type='default'):
+def preprocess_elec(api, dataset, data_type='default', no_ligand=False):
     """
     Get pairwise electrostatic interactions
     :param api:
     :param dataset:
     :param data_type:
+    :param no_ligand: If true do not rename the ligand residue
     :return:
     """
 
@@ -260,7 +273,7 @@ def preprocess_elec(api, dataset, data_type='default'):
         # Check if data_type in nonbonded_dict
         if data_type not in nonbonded_dict:
             if data_type != 'default':
-                raise ValueError('{} data type not claculated for {}'.format(data_type, stid))
+                raise ValueError('{} data type not calculated for {}'.format(data_type, stid))
             elif 'group_ids' in nonbonded_dict:
                 logger.warning('{} uses outdated file format'.format(stid))
             else:
@@ -269,7 +282,9 @@ def preprocess_elec(api, dataset, data_type='default'):
             nonbonded_dict = nonbonded_dict[data_type]
 
         # Determine Ligand residue
-        if 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
+        if no_ligand:
+            ligand_resid=None
+        elif 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
             ligands = find_ligands(st=cms_model)
             assert (len(ligands) == 1)
             ligand_resid = None
@@ -389,12 +404,13 @@ def _load_hbonds(cms_model, data, ligand_resid=None):
     return data
 
 
-def preprocess_hbond(api, dataset, data_type=None):
+def preprocess_hbond(api, dataset, data_type=None, no_ligand=False):
     """
 
     :param api:
     :param dataset:
     :param data_type: Placeholder
+    :param no_ligand: do not rename ligand residues
     :return:
     """
     hbonds_df = pd.DataFrame()
@@ -413,7 +429,9 @@ def preprocess_hbond(api, dataset, data_type=None):
             data = get_trj_hbonds(api, stid)
 
         # Get ligand
-        if 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
+        if no_ligand:
+            ligand_resid=None
+        elif 'ligand_resnum' not in dataset.columns and 'ligand_chain' not in dataset.columns:
             ligands = find_ligands(st=cms_model)
             assert (len(ligands) == 1)
             ligand_resid = None
@@ -475,12 +493,13 @@ def label_torsion(cms_model, aid1, aid2, aid3, aid4):
         return '#' + ':'.join(list(map(str, [aid1, aid2, aid3, aid4])))
 
 
-def preprocess_torsion(api, dataset, data_type=None):
+def preprocess_torsion(api, dataset, data_type=None, no_ligand=False):
     """
 
     :param api:
     :param dataset:
     :param data_type: Placeholder
+    :param no_ligand: Placeholder
     :return:
     """
 
@@ -544,6 +563,8 @@ def main(args):
 
     data_types = args.data_types
 
+    no_ligand = args.no_ligand
+
     endpoint = args.endpoint
     username = args.username
     password = args.password
@@ -567,7 +588,7 @@ def main(args):
             func = preprocessor[d]
             data_type = data_types.get(d)  # Get data_type
             t = time.time()
-            df = func(api, dataset, data_type=data_type)
+            df = func(api, dataset, data_type=data_type, no_ligand=no_ligand)
             if args.keep_names:
                 df.loc[:, 'name'] = dataset['name'].values
             df.to_csv(outfile, sep=',')
