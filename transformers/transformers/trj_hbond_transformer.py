@@ -563,8 +563,8 @@ def _process(structure_dict):
             else:
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
     #  Close Queue
-    queue.join_thread()
     queue.close()
+    queue.join_thread()
     for w in workers:
         w.join()
     logger.info('Calculated hydrogen bonds in {:.0f} seconds'.format(time.time() - t))
