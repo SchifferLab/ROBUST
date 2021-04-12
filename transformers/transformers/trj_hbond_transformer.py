@@ -543,7 +543,6 @@ def _process(structure_dict):
     for i, frames in enumerate(frame_list):
         workers.append(HydrogenBondAnalysis(i, queue, cms_file, trj_dir, frames=frames, ndx=ligand_ndx))
         workers[i].start()
-
     # get results
     for i in range(nproc):
         try:
@@ -551,8 +550,6 @@ def _process(structure_dict):
         except Exception as e:
             logger.error('No new data recieved after {} seconds'.format(QUEUE_TIMEOUT))
             raise TimeoutError('Timeout Error occured: {}'.format(e))
-        queue.join_thread()
-        queue.close()
         for k in frame_results.keys():
             if k not in combined_results:
                 combined_results[k] = np.zeros(total_frames)
@@ -565,6 +562,9 @@ def _process(structure_dict):
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
             else:
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
+    #  Close Queue
+    queue.join_thread()
+    queue.close()
     for w in workers:
         w.join()
     logger.info('Calculated hydrogen bonds in {:.0f} seconds'.format(time.time() - t))
