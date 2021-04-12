@@ -25,7 +25,7 @@ NPROC = 16
 STEP = 2  # Process every nth frame
 LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
-QUEUE_TIMEOUT = 1200 # 20 minute timeout for processign a new frame
+QUEUE_TIMEOUT = None  # For trouble shooting code you can timeout the queue if it does not recieve new data
 
 class HydrogenBondAnalysis(multiprocessing.Process):
     """
@@ -276,6 +276,7 @@ class HydrogenBondAnalysis(multiprocessing.Process):
                             else:
                                 self.hbond_out[(n1, n2)] = np.zeros(len(self.frame_list))
                                 self.hbond_out[(n1, n2)][i] = 1.
+        print('Sending output')
         self.queue.put([self._id, self.hbond_out, self.water_mediated_out])
 
 
@@ -550,7 +551,8 @@ def _process(structure_dict):
         except Exception as e:
             logger.error('No new data recieved after {} seconds'.format(QUEUE_TIMEOUT))
             raise TimeoutError('Timeout Error occured: {}'.format(e))
-        queue.task_done()
+        queue.join_thread()
+        queue.close()
         for k in frame_results.keys():
             if k not in combined_results:
                 combined_results[k] = np.zeros(total_frames)
@@ -661,6 +663,12 @@ def parse_args():
                         help='Atom selection string specifying the ligand atoms. If provided only \
                              hydrogen bonds with the atoms identified as belonging to the ligand \
                               will be considered')
+    parser.add_argument('--timeout',
+                        type=float,
+                        dest='timeout',
+                        default=None,
+                        help='When the queue has nto recieved any new data it will raise a timeout error after'
+                             'X seconds. Useful when debugging code and batch submissions. The default is no timeout.')
 
     return parser.parse_args()
 
@@ -693,6 +701,7 @@ def main(args):
     NPROC = args.nproc
     STEP = args.step
     LIGAND_ASL = args.ligand_asl
+    QUEUE_TIMEOUT = args.timeout
 
     cms_file, trj = args.infiles
     prefix = args.prefix
