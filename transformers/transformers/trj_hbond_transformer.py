@@ -276,7 +276,6 @@ class HydrogenBondAnalysis(multiprocessing.Process):
                             else:
                                 self.hbond_out[(n1, n2)] = np.zeros(len(self.frame_list))
                                 self.hbond_out[(n1, n2)][i] = 1.
-        print('Sending output')
         self.queue.put([self._id, self.hbond_out, self.water_mediated_out])
 
 
