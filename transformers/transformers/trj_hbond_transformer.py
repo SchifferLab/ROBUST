@@ -353,12 +353,6 @@ def get_bse(x, min_blocks=3, maxfev=4000):
         return np.max(bse)
 
 
-def get_error(data, nproc):
-    pool = multiprocessing.Pool(processes=nproc)
-    err = pool.map(get_bse, data.values())
-    return dict(list(zip(data.keys(), err)))
-
-
 def block_averages(x, l):
     """
     Given a vector x return a vector x' of the block averages .
@@ -416,7 +410,7 @@ def get_error(data, nproc):
     pool = multiprocessing.Pool(processes=nproc)
     err = pool.map(get_bse, data)
 
-    return err
+    return np.array(err)
 
 
 def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff=0.1, is_water_mediated=False):
@@ -563,8 +557,8 @@ def _process(structure_dict):
             else:
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
     #  Close Queue
-    queue.join_thread()
     queue.close()
+    queue.join_thread()
     for w in workers:
         w.join()
     logger.info('Calculated hydrogen bonds in {:.0f} seconds'.format(time.time() - t))
