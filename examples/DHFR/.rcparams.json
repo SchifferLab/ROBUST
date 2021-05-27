@@ -13,8 +13,6 @@
         "xtick.minor.pad"     : 2,
         "ytick.major.pad"     : 2,
         "ytick.minor.pad"     : 2,
-        "xtick.labelsize"     : 20,
-        "ytick.labelsize"     : 20,
         "savefig.dpi"         : 600,
         "axes.linewidth"      : 1.0
 }
