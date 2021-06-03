@@ -25,7 +25,8 @@ NPROC = 16
 STEP = 2  # Process every nth frame
 LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
-QUEUE_TIMEOUT = None  # For trouble shooting code you can timeout the queue if it does not recieve new data
+QUEUE_TIMEOUT = 1200  # 20 minute timeout for processign a new frame
+
 
 class HydrogenBondAnalysis(multiprocessing.Process):
     """
@@ -62,12 +63,12 @@ class HydrogenBondAnalysis(multiprocessing.Process):
 
         # Get atom gids for which to get hbonds
         if ndx is None:
-            self.ndx = topo.asl2gids(self.cms_model, asl)
+            self.ndx = topo.asl2gids(self.cms_model, asl, include_pseudoatoms=False)
         else:
             self.ndx = ndx
 
         # Get atom gids for solvent
-        self.ndx_water = topo.asl2gids(self.cms_model, SOLVENT_ASL)
+        self.ndx_water = topo.asl2gids(self.cms_model, SOLVENT_ASL, include_pseudoatoms=False)
 
         # Load frame list
         if frames is not None:
@@ -133,16 +134,18 @@ class HydrogenBondAnalysis(multiprocessing.Process):
                 # NOTE this class returns true for the donor heavy atom
                 if mm.mmct_hbond_is_donor(self.cms_model, da.index):
                     # Convert back to pythonic indices
-                    self.donor[topo.aids2gids(self.cms_model, [a.index])[0]] = \
-                        topo.aids2gids(self.cms_model, [da.index])[0]
+                    self.donor[topo.aids2gids(self.cms_model, [a.index], include_pseudoatoms=False, )[0]] = \
+                        topo.aids2gids(self.cms_model, [da.index], include_pseudoatoms=False)[0]
             else:
                 if mm.mmct_hbond_is_acceptor(self.cms_model, a.index):
                     # If a == acceptor get list of bonded atoms
                     acc_att_list = []
                     for acceptor_neighbor in a.bonded_atoms:
                         if acceptor_neighbor.atom_type != 63:  # If not lone pair
-                            acc_att_list.append(topo.aids2gids(self.cms_model, [acceptor_neighbor.index])[0])
-                    self.acceptor[topo.aids2gids(self.cms_model, [a.index])[0]] = acc_att_list
+                            acc_att_list.append(topo.aids2gids(self.cms_model, [acceptor_neighbor.index],
+                                                               include_pseudoatoms=False)[0])
+                    self.acceptor[
+                        topo.aids2gids(self.cms_model, [a.index], include_pseudoatoms=False)[0]] = acc_att_list
 
     def _set_bonded_atoms(self):
         """
@@ -150,7 +153,8 @@ class HydrogenBondAnalysis(multiprocessing.Process):
         :return:
         """
         for i, a in enumerate(self.cms_model.atom):
-            self.bonded_atoms[i] = topo.aids2gids(self.cms_model, [ab.index for ab in a.bonded_atoms])
+            self.bonded_atoms[i] = topo.aids2gids(self.cms_model, [ab.index for ab in a.bonded_atoms],
+                                                  include_pseudoatoms=False)
 
     def match_hbond(self, n1, n2, p):
         """
@@ -306,21 +310,21 @@ def dynamic_cpu_assignment(n_cpus):
         return nproc
 
 
-def block_averages(x, l):
+def block_averages(x, length):
     """
     Given a vector x return a vector x' of the block averages .
     """
 
-    if l == 1:
+    if length == 1:
         return x
 
     # If the array x is not a multiple of l drop the first x values so that it becomes one
-    if len(x) % l != 0:
-        x = x[int(len(x) % l):]
+    if len(x) % length != 0:
+        x = x[int(len(x) % length):]
 
     xp = []
-    for i in range(len(x) // int(l)):
-        xp.append(np.mean(x[l * i:l + l * i]))
+    for i in range(len(x) // int(length)):
+        xp.append(np.mean(x[length * i:length + length * i]))
 
     return np.array(xp)
 
@@ -341,52 +345,7 @@ def get_bse(x, min_blocks=3, maxfev=4000):
     # Fit simple exponential to determine plateau
     def model_func(x, p0, p1):
         return p0 * (1 - np.exp(-p1 * x))
-    try:
-        opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
-                                                    (np.mean(bse), 0.1), maxfev=maxfev)
-        return opt_parms[0]
-    except Exception as e:
-        logger.warning('Could not fit function to data within maxfev: {}'.format(maxfev))
-        logger.warning(e)
-        logger.warning('Setting standard error to maximum observed')
-        return np.max(bse)
 
-
-def block_averages(x, l):
-    """
-    Given a vector x return a vector x' of the block averages .
-    """
-
-    if l == 1:
-        return x
-
-    # If the array x is not a multiple of l drop the first x values so that it becomes one
-    if len(x) % l != 0:
-        x = x[int(len(x) % l):]
-
-    xp = []
-    for i in range(len(x) // int(l)):
-        xp.append(np.mean(x[l * i:l + l * i]))
-
-    return np.array(xp)
-
-
-def ste(x):
-    return np.std(x) / np.sqrt(len(x))
-
-
-def get_bse(x, min_blocks=3, maxfev=4000):
-    steps = np.max((1, len(x) // 100))
-    stop = len(x) // min_blocks + steps
-
-    bse = []
-    for l in range(1, stop, steps):
-        xp = block_averages(x, l)
-        bse.append(ste(xp))
-
-    # Fit simple exponential to determine plateau
-    def model_func(x, p0, p1):
-        return p0 * (1 - np.exp(-p1 * x))
     try:
         opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
                                                     (np.mean(bse), 0.1), maxfev=maxfev)
@@ -488,7 +447,7 @@ def _process(structure_dict):
         pipeline = structure_dict['custom']['pipeline']
         fork = [pipeline[0], ]
         if len(pipeline) == 1:
-            del(structure_dict['custom']['pipeline'])
+            del (structure_dict['custom']['pipeline'])
         else:
             structure_dict['custom']['pipeline'] = pipeline[1:]
 
@@ -502,10 +461,10 @@ def _process(structure_dict):
     msys_model, cms_model = topo.read_cms(str(cms_file))
     if LIGAND_ASL is None:
         logger.info('Calculating all intra- and intermolecular hydrogen bonds')
-        ligand_ndx=None
+        ligand_ndx = None
     else:
         logger.info('Calculating hydrogen bonds between system and: {}'.format(LIGAND_ASL))
-        ligand_ndx = topo.asl2gids(cms_model, LIGAND_ASL)
+        ligand_ndx = topo.asl2gids(cms_model, LIGAND_ASL, include_pseudoatoms=False)
     logger.info('Unpacking trajectory frame set')
     trjtar = structure_dict['files']['desmond_trjtar']
 
@@ -536,6 +495,7 @@ def _process(structure_dict):
     for i, frames in enumerate(frame_list):
         workers.append(HydrogenBondAnalysis(i, queue, cms_file, trj_dir, frames=frames, ndx=ligand_ndx))
         workers[i].start()
+
     # get results
     for i in range(nproc):
         try:
@@ -543,6 +503,7 @@ def _process(structure_dict):
         except Exception as e:
             logger.error('No new data recieved after {} seconds'.format(QUEUE_TIMEOUT))
             raise TimeoutError('Timeout Error occured: {}'.format(e))
+        queue.task_done()
         for k in frame_results.keys():
             if k not in combined_results:
                 combined_results[k] = np.zeros(total_frames)
@@ -555,9 +516,6 @@ def _process(structure_dict):
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
             else:
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
-    #  Close Queue
-    queue.close()
-    queue.join_thread()
     for w in workers:
         w.join()
     logger.info('Calculated hydrogen bonds in {:.0f} seconds'.format(time.time() - t))
@@ -607,24 +565,24 @@ def parse_args():
     description = '''
         Calculate protein/ligand inter- and intramolecular hydrogen bond frequency.\n
         For eligible atomtypes hydrogen-bonds are defined by geometric criteria:
-        
+
         H = hydrogen
         A = acceptor
         AA = atom bonded to acceptor
         D = atom bonded to hydrogen
         :: = potential hbond
         - = covalent bond
-        
+
         1. the H::A distance must be less than or equal to 3.0 Angstrom.
         2. the D-H::A angle must be at least 110 degree.
         3. the H::A-AA angle must be at least 90 degree.
-        
+
         Hydrogenbond frequency is calculated both for inter and intramolecular hydrogenbonds, error is estimated using 
         block averaging. The frequency of water mediated hydrogen bonds is also calculated. No error are calculated for
         water mediated hydrogen bonds, because not only can water mediated hydrogen bonds can exist in multiple unique 
         states but at each point in time there can potentialy be multiple water mediated hydrogen bonds between a pair
         of solute heavy atoms. Results are returned in a csv file. 
-        
+
         '''
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('infiles',
@@ -656,12 +614,6 @@ def parse_args():
                         help='Atom selection string specifying the ligand atoms. If provided only \
                              hydrogen bonds with the atoms identified as belonging to the ligand \
                               will be considered')
-    parser.add_argument('--timeout',
-                        type=float,
-                        dest='timeout',
-                        default=None,
-                        help='When the queue has nto recieved any new data it will raise a timeout error after'
-                             'X seconds. Useful when debugging code and batch submissions. The default is no timeout.')
 
     return parser.parse_args()
 
@@ -686,16 +638,6 @@ def get_logger():
 
 
 def main(args):
-
-    global NPROC
-    global STEP
-    global LIGAND_ASL
-
-    NPROC = args.nproc
-    STEP = args.step
-    LIGAND_ASL = args.ligand_asl
-    QUEUE_TIMEOUT = args.timeout
-
     cms_file, trj = args.infiles
     prefix = args.prefix
 
@@ -712,5 +654,10 @@ if __name__ == '__main__':
     import argparse
 
     args = parse_args()
+
+    NPROC = args.nproc
+    STEP = args.step
+    LIGAND_ASL = args.ligand_asl
+
     logger = get_logger()
     main(args)
