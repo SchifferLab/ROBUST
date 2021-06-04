@@ -25,7 +25,7 @@ NPROC = 16
 STEP = 2  # Process every nth frame
 LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
-QUEUE_TIMEOUT = 1200  # 20 minute timeout for processign a new frame
+QUEUE_TIMEOUT = 120000  # timeout for processing a new frame
 
 
 class HydrogenBondAnalysis(multiprocessing.Process):
@@ -142,107 +142,111 @@ class HydrogenBondAnalysis(multiprocessing.Process):
                     acc_att_list = []
                     for acceptor_neighbor in a.bonded_atoms:
                         if acceptor_neighbor.atom_type != 63:  # If not lone pair
-                            acc_att_list.append(topo.aids2gids(self.cms_model, [acceptor_neighbor.index],
+                            acc_att_list.append(topo.aids2gids(self.cms_model, [acceptor_neighbor.index, ],
                                                                include_pseudoatoms=False)[0])
                     self.acceptor[
-                        topo.aids2gids(self.cms_model, [a.index], include_pseudoatoms=False)[0]] = acc_att_list
+                        topo.aids2gids(self.cms_model, [a.index, ], include_pseudoatoms=False)[0]] = acc_att_list
 
     def _set_bonded_atoms(self):
         """
         Set bond lookup dir
         :return:
         """
-        for i, a in enumerate(self.cms_model.atom):
-            self.bonded_atoms[i] = topo.aids2gids(self.cms_model, [ab.index for ab in a.bonded_atoms],
-                                                  include_pseudoatoms=False)
+        for a in self.cms_model.atom:
+            self.bonded_atoms[topo.aids2gids(self.cms_model, [a.index, ], include_pseudoatoms=False)[0]] = \
+                topo.aids2gids(self.cms_model, [ab.index for ab in a.bonded_atoms], include_pseudoatoms=False)
 
-    def match_hbond(self, n1, n2, p):
+    def match_hbond(self, gid1, gid2, pos):
         """
-        Check whether atomic indices n1 & n2 for a hydrogen bond
-        :param n1:
-        :param n2:
-        :param p:
+        Check whether atomic indices gid1 & gid2 for a hydrogen bond
+        :param gid1:
+        :param gid2:
+        :param pos:
         :return:
         """
-        # Check wether n1::n2 are a donor-acceptor pair and get bonded atoms
-        if n1 in self.acceptor:
-            acceptor = n1
-            aa = self.acceptor[n1]
-        elif n2 in self.acceptor:
-            acceptor = n2
-            aa = self.acceptor[n2]
+        # Check wether gid1::gid2 are a donor-acceptor pair and get bonded atoms
+        if gid1 in self.acceptor:
+            acceptor = gid1
+            aa = self.acceptor[gid1]
+        elif gid2 in self.acceptor:
+            acceptor = gid2
+            aa = self.acceptor[gid2]
         else:
             return False
 
-        if n1 in self.donor:
-            donor = n1
-            dd = self.donor[n1]
-        elif n2 in self.donor:
-            donor = n2
-            dd = self.donor[n2]
+        if gid1 in self.donor:
+            donor = gid1
+            dd = self.donor[gid1]
+        elif gid2 in self.donor:
+            donor = gid2
+            dd = self.donor[gid2]
         else:
             return False
 
         # measure D-H::A distance
-        dist = self.dist(p[n1], p[n2])
+        dist = self.dist(pos[gid1], pos[gid2])
         if dist > self.dmax:
             return False
         # measure D-H::A angle
-        dangle = self.angle(p[donor], p[dd], p[acceptor])
+        dangle = self.angle(pos[donor], pos[dd], pos[acceptor])
         if dangle < self.donor_angle:
             return False
         # measure -H::A-AA angles
         for a in aa:
-            aangle = self.angle(p[acceptor], p[donor], p[a])
+            aangle = self.angle(pos[acceptor], pos[donor], pos[a])
             if aangle < self.acceptor_angle:
                 return False
         # Congratulation, you are indeed a hydrogen bond
         return True
 
-    def water_mediated_hbond(self, i, f, n1, n2, dist_tree):
+    def water_mediated_hbond(self, i, pos, gid1, gid2, dist_tree):
         """
         Get water mediated hydrogen bonds
-        :param i:
-        :param f:
-        :param n1:
-        :param n2:
+        :param i: Frame index
+        :param pos: System coordinates
+        :param gid1:
+        :param gid2:
         :param dist_tree:
         :return:
         """
-        # Get atomic coordinates
-        pos = f.pos()
-        # NOTE get pythonic indices water res
-        r2_atoms = self.bonded_atoms[n2] + [n2]
+
+        # Get gid of the atom bonded neighbour(s)
+        water_gids = self.bonded_atoms[gid2] + [gid2]
+
         # Give some buffer to dmax
         dmax = self.dmax + 0.2
-        for a2 in r2_atoms:
-            ndx_nn = self.can_form_hbond[dist_tree.query_ball_point(pos[a2], dmax)]
-            for n3 in ndx_nn:
+        for gid in water_gids:
+            nn_gid = self.can_form_hbond[dist_tree.query_ball_point(pos[gid], dmax)]
+            # skip is only self
+            if len(nn_gid) <= 1:
+                continue
+            for gid3 in nn_gid:
                 # NOTE skip ignore n1,self_res
-                if n3 in [n1] + r2_atoms:
+                if gid3 in [gid1] + water_gids:
                     continue
                 # Only check water mediated hydrogen bonds with heavy atoms
-                if n3 not in self.ndx_water:
-                    if self.match_hbond(a2, n3, pos):
+                if gid3 not in self.ndx_water:
+                    if self.match_hbond(gid, gid3, pos):
                         # If interaction has been observed previously set frame f to 1
-                        if (n1, n3) in self.water_mediated_out:
-                            self.water_mediated_out[(n1, n3)][i] = 1.
-                        elif (n3, n1) in self.water_mediated_out:
+                        if (gid1, gid3) in self.water_mediated_out:
+                            self.water_mediated_out[(gid1, gid3)][i] = 1.
+                        elif (gid3, gid1) in self.water_mediated_out:
                             # Check in the opposite direction (shouldn't happen but better be safe)
-                            self.water_mediated_out[(n3, n1)][i] = 1.
+                            self.water_mediated_out[(gid3, gid1)][i] = 1.
                         # If interaction hasn't been observed yet initialize new pairwise interactions
                         else:
-                            self.water_mediated_out[(n1, n3)] = np.zeros(len(self.frame_list))
-                            self.water_mediated_out[(n1, n3)][i] = 1.
+                            self.water_mediated_out[(gid1, gid3)] = np.zeros(len(self.frame_list))
+                            self.water_mediated_out[(gid1, gid3)][i] = 1.
 
     def run(self):
         """
         DocString
         :return:
         """
+
         for i, f in enumerate(self.frame_list):
-            # print 'processing frame', f
-            # Get atomic coordinates
+
+            # Get atomic coordinates (including pseudo atoms)
             pos = f.pos()
 
             # Construct Kdist tree for donor acceptor list
@@ -250,37 +254,48 @@ class HydrogenBondAnalysis(multiprocessing.Process):
 
             # Give some buffer to dmax
             dmax = self.dmax + 0.2
-            for n, (n1, p1) in enumerate(zip(self.can_form_hbond, pos[self.can_form_hbond])):
+            for n, (gid1, p1) in enumerate(zip(self.can_form_hbond, pos[self.can_form_hbond])):
 
                 # check if solute atom
-                if n1 not in self.ndx:
+                if gid1 not in self.ndx:
                     continue
                 # query kdist tree for nearest neighbour atoms
-                nn_atoms = dist_tree.query_ball_point(p1, dmax)
+                nn_gids = self.can_form_hbond[dist_tree.query_ball_point(p1, dmax)]
+
                 # Skip if only self
-                if len(nn_atoms) <= 1:
+                if len(nn_gids) <= 1:
                     continue
-                ndx_nn = self.can_form_hbond[nn_atoms]
-                for n2 in ndx_nn:
-                    if n1 == n2 or n2 in self.bonded_atoms[n1]:
+
+                for gid2 in nn_gids:
+                    if gid1 == gid2 or gid2 in self.bonded_atoms[gid1]:
                         continue
-                    if self.match_hbond(n1, n2, pos):
-                        # if n2 not solute check for water mediated hbonds
-                        if n2 in self.ndx_water:
-                            self.water_mediated_hbond(i, f, n1, n2, dist_tree)
+                    if self.match_hbond(gid1, gid2, pos):
+                        # if gid2 not solute check for water mediated hbonds
+                        if gid2 in self.ndx_water:
+                            self.water_mediated_hbond(i, pos, gid1, gid2, dist_tree)
                         # for direct interactions add to frame results
                         else:
                             # If interaction has been pbserved previously set frame f to 1
-                            if (n1, n2) in self.hbond_out:
-                                self.hbond_out[(n1, n2)][i] = 1.
-                            elif (n2, n1) in self.hbond_out:
+                            if (gid1, gid2) in self.hbond_out:
+                                self.hbond_out[(gid1, gid2)][i] = 1.
+                            elif (gid2, gid1) in self.hbond_out:
                                 # Check in the opposite direction (shouldn't happen but better be safe)
-                                self.hbond_out[(n2, n1)][i] = 1.
+                                self.hbond_out[(gid2, gid1)][i] = 1.
                             # If interaction hasn't been observed yet initialize new pairwise interactions
                             else:
-                                self.hbond_out[(n1, n2)] = np.zeros(len(self.frame_list))
-                                self.hbond_out[(n1, n2)][i] = 1.
+                                self.hbond_out[(gid1, gid2)] = np.zeros(len(self.frame_list))
+                                self.hbond_out[(gid1, gid2)][i] = 1.
         self.queue.put([self._id, self.hbond_out, self.water_mediated_out])
+
+
+def gid2aid(cms_model, gid):
+    """
+    Given an atom index return the full system id
+    :param cms_model:
+    :param gid:
+    :return:
+    """
+    return topo.aid_match(cms_model)[gid]
 
 
 def dynamic_cpu_assignment(n_cpus):
@@ -388,7 +403,8 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
     data_raw = []
     frequencies = []
 
-    atom_dict = dict([(a.index, a) for a in cms_model.atom])
+    atom_dict = dict(
+        [(topo.aids2gids(cms_model, [a.index, ], include_pseudoatoms=False)[0], a) for a in cms_model.atom])
 
     # Make sure that there are actually results to return
     try:
@@ -401,7 +417,7 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
         if frequency >= frequency_cutoff:
             data_raw.append(frame_results[p])
             frequencies.append(frequency)
-            atom_pair_id.append([p[0] + 1, p[1] + 1])  # Convert from pythonic to atomic
+            atom_pair_id.append([p[0], p[1]])
 
     data_raw = np.asarray(data_raw)
 
@@ -418,11 +434,11 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
 
     df = pd.DataFrame(np.hstack((frequencies, stddev, water_mediated)),
                       columns=['frequency', '$\\sigma$', 'water_mediated'])
-    for i, (aid1, aid2) in enumerate(atom_pair_id):
-        a1 = atom_dict[aid1]
-        a2 = atom_dict[aid2]
-        df.loc[i, 'atom index 1'] = aid1
-        df.loc[i, 'atom index 2'] = aid2
+    for i, (gid1, gid2) in enumerate(atom_pair_id):
+        a1 = atom_dict[gid1]
+        a2 = atom_dict[gid2]
+        df.loc[i, 'atom index 1'] = gid2aid(cms_model, gid1)
+        df.loc[i, 'atom index 2'] = gid2aid(cms_model, gid2)
         df.loc[i, 'chain 1'] = a1.chain.strip()
         df.loc[i, 'chain 2'] = a2.chain.strip()
         df.loc[i, 'resnum 1'] = a1.resnum
@@ -503,7 +519,6 @@ def _process(structure_dict):
         except Exception as e:
             logger.error('No new data recieved after {} seconds'.format(QUEUE_TIMEOUT))
             raise TimeoutError('Timeout Error occured: {}'.format(e))
-        queue.task_done()
         for k in frame_results.keys():
             if k not in combined_results:
                 combined_results[k] = np.zeros(total_frames)
@@ -516,6 +531,9 @@ def _process(structure_dict):
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
             else:
                 combined_water_results[k][frame_list[_id] // STEP] = water_frame_results[k].tolist()
+    #  Close Queue
+    queue.close()
+    queue.join_thread()
     for w in workers:
         w.join()
     logger.info('Calculated hydrogen bonds in {:.0f} seconds'.format(time.time() - t))
