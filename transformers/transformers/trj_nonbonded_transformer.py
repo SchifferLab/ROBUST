@@ -835,8 +835,12 @@ def main(args):
     ]
 
     if args.params is not None:
-        nonbonded_params = json.loads(args.params)
-        structure_dict_list[0]['nonbonded_params'] = nonbonded_params
+        if os.path.isfile(args.params):
+            with open(args.params) as fh:
+                structure_dict_list[0]['nonbonded_params'] = json.load(fh)
+        else:
+            nonbonded_params = json.loads(args.params)
+            structure_dict_list[0]['nonbonded_params'] = nonbonded_params
 
     for sd in run(structure_dict_list):
         with open('{}_trj_nonbonded_transformer.json'.format(prefix), 'w') as outfile:
