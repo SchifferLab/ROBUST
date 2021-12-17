@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import json
+import shutil
 import psutil
 import tarfile
 import multiprocessing
@@ -31,16 +32,20 @@ import logging
 logging.root.setLevel(logging.NOTSET)
 logger = logging.getLogger(__name__)
 
+IS_PLDB = True
+PLDB_TMP = '/data/schiffer-pldb/tmp'
+
 SCHRODINGER = '/opt/schrodinger/suite2020-4'  # Where to find schrodinger, important on the PLDB
-HOSTS = ['vif', 'tesla']  # What host to run /schrodinger/desmond on. Must be specified in host file.
-NPROC = 16  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
+HOSTS = ['tesla', 'harmony']  # What host to run /schrodinger/desmond on. Must be specified in host file.
+NPROC = 1  # Number of cores, if less than 0 the fraction of available cores will be used (e.g. 0.25)
 MAX_GROUPS = 999
 ENERGY_COMPONENTS = ['nonbonded_elec', 'nonbonded_vdw']
 DESMOND_TIMEOUT = 14400  # Timeout for the desmond job
 
 MONITOR_TIME = 120  # Interval over which to monitor GPU usage in seconds
-GPU_UTIL_THRESHOLD = 10  # Maximum average gpu usage over monitored time
-MEM_UTIL_THRESHOLD = 10  # Maximum average gpu memory usage over monitored time
+GPU_UTIL_THRESHOLD = 90  # Maximum average gpu usage over monitored time
+MEM_UTIL_THRESHOLD = 90  # Maximum average gpu memory usage over monitored time
+GPU_MEM_THRESHOLD = 2000  # Requires at least 2000 MBits of free GPU memory on the gpu (not tested)
 TIMEOUT = 7200  # Timeout for host search, transformer exits if it can't find a host within time
 SSH_TIMEOUT = 5  # Timeout for ssh
 CMD_TIMEOUT = 5  # Timeout for remote nvidia-smi call
@@ -224,12 +229,14 @@ class MonitorGpuUsage(object):
         self.start()
         self.gpu_util = []
         self.mem_util = []
+        self.mem_free = []
 
     def function(self):
         nvidiasmi = run_nvidiasmi_remote(self.server, self.ssh_timeout, self.cmd_timeout)
-        gpu_util, mem_util = get_gpu_util(nvidiasmi)
+        gpu_util, mem_util, mem_free = get_gpu_util(nvidiasmi)
         self.gpu_util.append(gpu_util)
         self.mem_util.append(mem_util)
+        self.mem_free.append(mem_free)
 
     def _run(self):
         self.is_running = False
@@ -334,7 +341,9 @@ def get_gpu_util(nvidiasmi, gpuid=0):
     util = gpu.find('utilization')
     gpu_util = float(util.find('gpu_util').text.rstrip('%'))
     mem_util = float(util.find('memory_util').text.rstrip('%'))
-    return gpu_util, mem_util
+    mem_usage = gpu.find('fb_memory_usage')  # This is the device memry (bar1 is used to map device mem)
+    mem_free = float(mem_usage.find('free').text.rstrip('MiB'))
+    return gpu_util, mem_util, mem_free
 
 
 def get_average_gpu_util(server, interval=5):
@@ -346,17 +355,19 @@ def get_average_gpu_util(server, interval=5):
     monitor.stop()
     avg_gpu_util = np.mean(monitor.gpu_util)
     avg_mem_util = np.mean(monitor.mem_util)
-    return avg_gpu_util, avg_mem_util
+    avg_mem_free = np.mean(monitor.mem_free)
+    return avg_gpu_util, avg_mem_util, avg_mem_free
 
 
 def get_gpu_host(hosts):
     t = time.time()
     while time.time() - t < TIMEOUT:
         for host in hosts:
-            gpu_util, mem_util = get_average_gpu_util(host)
+            gpu_util, mem_util, mem_free = get_average_gpu_util(host)
             logger.debug('{} average gpu util: {}%'.format(host, gpu_util))
             logger.debug('{} average memory util: {}%'.format(host, mem_util))
-            if gpu_util < GPU_UTIL_THRESHOLD and mem_util < MEM_UTIL_THRESHOLD:
+            logger.debug('{} average free memory: {}'.format(host, mem_free))
+            if gpu_util < GPU_UTIL_THRESHOLD and mem_util < MEM_UTIL_THRESHOLD and mem_free > GPU_MEM_THRESHOLD:
                 return host
     logger.error('Unable to find gpu host within {} seconds'.format(TIMEOUT))
 
@@ -384,7 +395,7 @@ def ste(x):
     return np.std(x) / np.sqrt(len(x))
 
 
-def get_bse(x, min_blocks=3, maxfev=4000):
+def get_bse(x, min_blocks=3):
     steps = np.max((1, len(x) // 100))
     stop = len(x) // min_blocks + steps
 
@@ -396,18 +407,14 @@ def get_bse(x, min_blocks=3, maxfev=4000):
     # Fit simple exponential to determine plateau
     def model_func(x, p0, p1):
         return p0 * (1 - np.exp(-p1 * x))
-    try:
-        opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
-                                                    (np.mean(bse), 0.1), maxfev=maxfev)
-        return opt_parms[0]
-    except Exception as e:
-        logger.warning('Could not fit function to data within maxfev: {}'.format(maxfev))
-        logger.warning(e)
-        logger.warning('Setting standard error to maximum observed')
-        return np.max(bse)
+
+    opt_parms, parm_cov = sp.optimize.curve_fit(model_func, np.arange(len(bse)), bse,
+                                                (np.mean(bse), 0.1), maxfev=2000)
+
+    return opt_parms[0]
 
 
-def get_error(data, nproc):
+def _get_error(data, nproc):
     pool = multiprocessing.Pool(processes=nproc)
     err = pool.map(get_bse, data.values())
     return dict(list(zip(data.keys(), err)))
@@ -599,6 +606,14 @@ def assign_atomgroups(structure_dict, cms_model, fork):
     return _id, atom_groups, nonbonded_dict, structure_dict, fork
 
 
+def clean_pldb_tmp(cwd, tmp):
+    logger.info('Cleaning up tempdir')
+    for f in os.listdir(tmp):
+        shutil.move(os.path.join(tmp, f), os.path.join(cwd, f))
+    os.chdir(cwd)
+    os.rmdir(tmp)
+
+
 def _process(structure_dict):
     """
     DocString
@@ -666,16 +681,19 @@ def _process(structure_dict):
                     tar.add(fn)
         else:
             with tarfile.open(nonbonded_raw, 'r:bz2') as tar:
-                tar.extractall()
+                if not os.path.isdir('./tmp'):
+                    os.mkdir('./tmp')
+                tar.extractall(path='./tmp')
                 members = tar.getmembers()
             with tarfile.open(outfile_raw, 'w:bz2') as tar:
                 for member in members:
                     filename = member.name
                     if filename.split('_')[0] not in ('custom', 'default'):  # Backward Compatibility
                         logger.warning('Updating file names to new version')
-                        os.rename(filename, 'default_' + filename)
+                        os.rename(os.path.join('./tmp', filename), os.path.join('./tmp', 'default_' + filename))
                         filename = 'default_' + filename
-                    tar.add(filename)
+                    tar.add(os.path.join('./tmp', filename),
+                            arcname=filename)  # arcname to add the file without the path
                 for fn in [energy_group_file, '{}_atom_groups.json'.format(_id)]:
                     tar.add(fn)
 
@@ -702,7 +720,7 @@ def _process(structure_dict):
         # Calculate the error separately over multiple processes
         nproc = dynamic_cpu_assignment(NPROC)
         logger.debug('Calculating error for {}'.format(comp))
-        error_dict = get_error(data_dict, nproc)
+        error_dict = _get_error(data_dict, nproc)
         for k in results[comp]['keys']:
             results[comp]['error'].append(error_dict[tuple(k)])
 
@@ -783,7 +801,7 @@ def parse_args():
                         type=str,
                         nargs='+',
                         dest='host',
-                        default='localhost',
+                        default=None,
                         help='Host(s) to run schrodinger/desmond on')
     parser.add_argument('--debug',
                         dest='debug',
@@ -816,7 +834,6 @@ def get_logger():
     logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
-
 
 def main(args):
     prefix = args.prefix
