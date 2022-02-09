@@ -662,9 +662,13 @@ def _process(structure_dict):
 
     _id, atom_groups, nonbonded_dict, structure_dict, fork = assign_atomgroups(structure_dict, cms_model, fork)
 
-    logger.info('Finding free host')
-    logger.debug('Hosts: ' + ', '.join(HOSTS))
-    host = get_gpu_host(HOSTS)
+    if len(HOSTS) == 1 and HOSTS[0] in ('localhost', '127.0.0.1'):
+        host = HOSTS[0]
+        logger.warning('Host is {}. Will not look for free gpu'.format(host))
+    else:
+        logger.info('Finding free host')
+        logger.debug('Hosts: ' + ', '.join(HOSTS))
+        host = get_gpu_host(HOSTS)
 
     logger.info('Running desmond job on: {}'.format(host))
     vrun_obj = VRUN(cms_model, trj_dir, cfgfile, atom_groups)
