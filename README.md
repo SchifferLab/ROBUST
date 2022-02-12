@@ -2,7 +2,7 @@
 
 Molecular dynamics simulations are well suited for studying molecular recognition. A key challenge is the derivation of meaningful descriptors from the raw MD coordinates.
    
-ROBUST provides a set tools to calculate physics based descriptors from molecular dynamics simulations.
+ROBUST provides a set of tools to calculate physics based descriptors from molecular dynamics simulations.
 
 Along with the transformers we provide a number of examples cases.
 
@@ -12,14 +12,15 @@ Add Description
 
 ## Requirements
 
-* python &ge; 2.7
+* python &ge; 3.6
 * numpy
 * pandas
 * scipy
 * scikit-learn
+* voronota
 * [Schrodinger](https://www.schrodinger.com) &ge; v.18.1 
 
-Schrodinger is required to process molecular dynamic.
+The Schrodinger Software Suite is required to process molecular dynamic simulations.
 
 For examples, the descriptors have been precomputed thus the examples do not require Schrodinger.
 
@@ -46,7 +47,7 @@ All transformers can be imported into a python script or jupyter notebook. An ex
 
 #### From the PLDB
 
-All transformers  can be incorporated into a PLDB pipeline. For details on our in-house analysis pipeline contact Florian Leidner.
+All transformers  can be incorporated into a PLDB pipeline. For details on our in-house analysis pipeline contact Judy Huang.
 
 
 ## Examples
@@ -63,6 +64,12 @@ Florian Leidner:
 
 florian.leidner@umassmed.edu
 
+Judy Huang
+
+qiuyu.huang@umassmed.edu
+
 Celia Schiffer:
 
 celia.schiffer@umassmed.edu
+
+
