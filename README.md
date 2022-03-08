@@ -6,8 +6,7 @@ ROBUST provides a set of tools to calculate physics based descriptors from molec
 
 Along with the transformers we provide a number of examples cases.
 
-----------------------
-Add Description
+
 
 
 ## Requirements
@@ -52,10 +51,16 @@ All transformers  can be incorporated into a PLDB pipeline. For details on our i
 
 ## Examples
 
+#### HIV
+
+Development of a predictive model for inhibitor affinity of drug resistant HIV-1 protease variants using pMD and ROBUST
+
+Referece paper: [Deciphering Complex Mechanisms of Resistance and Loss of Potency through Coupled Molecular Dynamics and Machine Learning](https://pubmed.ncbi.nlm.nih.gov/33783217/)
 #### DHFR
 
 Application of pMD and ROBUST to identify Trimethoprim resistant dihydrofolate reductase variants
 
+Reference paper:[Deciphering Antifungal Drug Resistance in Pneumocystis jirovecii DHFR with Molecular Dynamics and Machine Learning](https://pubmed.ncbi.nlm.nih.gov/34138546/)
 
 ## Contact
 
