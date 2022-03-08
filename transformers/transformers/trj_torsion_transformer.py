@@ -279,7 +279,6 @@ def _process(structure_dict):
     logger.info('Load simulation files')
 
     cms_file = structure_dict['files']['desmond_cms']
-
     msys_model, cms_model = topo.read_cms(str(cms_file))
 
     trjtar = structure_dict['files']['desmond_trjtar']
@@ -408,6 +407,8 @@ def main(args):
 
     prefix = args.prefix
     desmond_cms, trjtar = args.infiles
+    desmond_cms = os.path.abspath(str(desmond_cms))
+    trjtar = os.path.abspath(str(trjtar))
     NPROC = args.nproc
 
     # work in tempdir
