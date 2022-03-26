@@ -22,7 +22,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 NPROC = 16
-STEP = 2  # Process every nth frame
+STEP = 200  # Process every nth frame
 LIGAND_ASL = None
 SOLVENT_ASL = 'solvent'  # solvent molecules in maestro asl
 QUEUE_TIMEOUT = 120000  # timeout for processing a new frame
@@ -288,16 +288,6 @@ class HydrogenBondAnalysis(multiprocessing.Process):
         self.queue.put([self._id, self.hbond_out, self.water_mediated_out])
 
 
-def gid2aid(cms_model, gid):
-    """
-    Given an atom index return the full system id
-    :param cms_model:
-    :param gid:
-    :return:
-    """
-    return topo.aid_match(cms_model)[gid]
-
-
 def dynamic_cpu_assignment(n_cpus):
     """
     Return the number of CPUs to use.
@@ -437,8 +427,8 @@ def get_results(cms_model, frame_results, calculate_error=True, frequency_cutoff
     for i, (gid1, gid2) in enumerate(atom_pair_id):
         a1 = atom_dict[gid1]
         a2 = atom_dict[gid2]
-        df.loc[i, 'atom index 1'] = gid2aid(cms_model, gid1)
-        df.loc[i, 'atom index 2'] = gid2aid(cms_model, gid2)
+        df.loc[i, 'atom index 1'] = a1.index
+        df.loc[i, 'atom index 2'] = a2.index
         df.loc[i, 'chain 1'] = a1.chain.strip()
         df.loc[i, 'chain 2'] = a2.chain.strip()
         df.loc[i, 'resnum 1'] = a1.resnum
