@@ -608,7 +608,7 @@ def main(args):
             if os.path.isfile(outst):
                 logger.warning('Overwriting atom labels structure: {}'.format(outst))
                 os.remove(outst)
-            for index, st in zip(data.index, ligand_structures):
+            for index, st in zip(df.index, ligand_structures):
                 st.property['s_m_title'] = '{}_{}_atom_labels'.format(index, args.type)
                 st.append(outst)
     logger.info('All Done!')
