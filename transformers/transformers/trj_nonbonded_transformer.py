@@ -179,7 +179,6 @@ class VRUN(object):
                '-WAIT']
 
         logger.info('Running desomd/vrun')
-        logger.debug('$SCHRODINGER_TEMPDIR: {}'.format(os.environ['SCHRODINGER_TMPDIR']))
         cmd.append('-HOST')
         cmd.append(host)
 
